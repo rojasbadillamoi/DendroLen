@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "Si usas este software en una publicación, por favor cítalo así:"
+title: "DendroLen"
+abstract: >
+  Aplicación de escritorio open-source para la medición de anillos de
+  árboles en tiempo real mediante carro de medición VRO conectado por
+  puerto USB-serial. Incluye co-datación en vivo con serie maestra,
+  cálculo de correlación global y deslizante (estilo COFECHA), registro
+  de anomalías (frost ring, light ring, missing ring, anillo falso,
+  fuego, golpe), y exportación al formato Tucson estándar (.rwl)
+  compatible con COFECHA, ARSTAN y dplR. Funcionalidad integrada para
+  unir múltiples archivos .rwl. Multiplataforma (Linux, macOS, Windows).
+  Forma parte de la suite MoiCedrus.
+authors:
+  - family-names: "Rojas Badilla"
+    given-names: "Moisés E."
+    orcid: "https://orcid.org/0000-0002-1101-2280"
+version: "2.0.0"
+date-released: "2026-06-08"
+repository-code: "https://github.com/rojasbadillamoi/DendroLen"
+url: "https://github.com/rojasbadillamoi/DendroLen"
+license: GPL-3.0
+keywords:
+  - dendrochronology
+  - dendrocronología
+  - tree-rings
+  - anillos-de-árboles
+  - cross-dating
+  - co-datación
+  - measurement-cart
+  - carro-de-medición
+  - tree-ring-measurement
+  - medición-de-anillos
+  - serial-encoder
+  - tucson-format
+  - real-time-measurement
+  - paleoclimatology
+  - paleoclimatología

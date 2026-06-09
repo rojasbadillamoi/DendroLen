@@ -1,0 +1,37 @@
+# ── Caché y archivos generados por Python ──────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ── Entornos virtuales ─────────────────────────────────────────────
+venv/
+env/
+.venv/
+ENV/
+
+# ── Carpetas generadas al compilar con PyInstaller ─────────────────
+build/
+dist/
+*.manifest
+*.spec.bak
+
+# ── Registros y archivos temporales ────────────────────────────────
+*.log
+*.tmp
+crash_log.txt
+
+# ── Archivos de prueba locales (no subir mediciones de prueba) ─────
+# Si tienes una carpeta de muestras de prueba, descomenta y ajusta:
+# muestras_prueba/
+# pruebas/
+
+# ── Archivos del sistema operativo ─────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Configuración de editores ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
