@@ -263,7 +263,7 @@ El panel de co-datación (parte inferior de la pantalla de medición) muestra:
 
 Si usas DendroLen en una publicación científica, por favor cítalo así:
 
-> Rojas Badilla, M. E. (2026). *DendroLen* (Versión 2.0.0) [Software]. Zenodo. https://doi.org/10.5281/zenodo.XXXXXXX
+> Rojas Badilla, M. E. (2026). *DendroLen* (Versión 2.0.0) [Software]. Zenodo. https://doi.org/10.5281/zenodo.20616207
 
 El archivo `CITATION.cff` del repositorio contiene los metadatos completos para gestores de referencias bibliográficas. GitHub también provee la cita en formato APA y BibTeX mediante el botón "Cite this repository" en la barra lateral del repositorio.
 

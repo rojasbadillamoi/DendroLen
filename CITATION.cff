@@ -17,6 +17,7 @@ authors:
     orcid: "https://orcid.org/0000-0002-1101-2280"
 version: "2.0.0"
 date-released: "2026-06-08"
+doi: 10.5281/zenodo.20616207
 repository-code: "https://github.com/rojasbadillamoi/DendroLen"
 url: "https://github.com/rojasbadillamoi/DendroLen"
 license: GPL-3.0
