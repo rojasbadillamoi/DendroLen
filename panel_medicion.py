@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QSplitter, QFrame, QSizePolicy, QInputDialog
+    QTextEdit, QSplitter, QFrame, QSizePolicy, QInputDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QEvent
 from PyQt6.QtGui import QKeySequence, QShortcut, QTextCursor
@@ -18,6 +18,7 @@ from constantes import (
     BEEP_DECADE_FREQ, BEEP_DECADE_DUR,
     BEEP_SAVE_FREQ, BEEP_SAVE_DUR, BEEP_SAVE_FREQ2, BEEP_SAVE_DUR2,
     ANOMALIAS, ANOMALIA_CODIGOS, ANOMALIA_COLORES, color_anomalia,
+    cargar_ruta, guardar_ruta, RUTA_GUARDADO,
 )
 from tema_manager import tema as _tema_mgr
 from tucson_writer import escribir_tucson, preview_tucson, escribir_sidecar
@@ -49,6 +50,8 @@ class PanelMedicion(QWidget):
         self._eventos: Dict[int, str] = dict(eventos_previos) if eventos_previos else {}
         self._paused  = False
         self._referencia_fijada = False
+        self._dist_ref = 0            # suma medida en el momento de fijar referencia
+        self._avance_carro = None     # avance del carro desde la referencia
         self._log_entries: List[tuple] = []  # (timestamp, level, msg) para regenerar al cambiar tema
         self._worker: Optional[SerialWorker] = None
         self._beep_timer = QTimer(self)
@@ -105,12 +108,27 @@ class PanelMedicion(QWidget):
 
     # ── 1. Info bar ───────────────────────────────────────────────────────────
     def _build_info_bar(self):
+        """Barra superior en dos filas: identidad de la serie arriba,
+        estado de la medición abajo."""
         self.info_bar = QWidget()
         self.info_bar.setObjectName("info_bar")
-        self.info_bar.setFixedHeight(46)
-        lay = QHBoxLayout(self.info_bar)
-        lay.setContentsMargins(14, 0, 14, 0)
-        lay.setSpacing(0)
+        self.info_bar.setFixedHeight(84)
+        outer = QVBoxLayout(self.info_bar)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        fila1 = QWidget(); fila1.setObjectName("info_row_top")
+        fila1.setFixedHeight(42)
+        lay1 = QHBoxLayout(fila1)
+        lay1.setContentsMargins(14, 0, 14, 0); lay1.setSpacing(0)
+
+        fila2 = QWidget(); fila2.setObjectName("info_row")
+        fila2.setFixedHeight(42)
+        lay2 = QHBoxLayout(fila2)
+        lay2.setContentsMargins(14, 0, 14, 0); lay2.setSpacing(0)
+
+        outer.addWidget(fila1)
+        outer.addWidget(fila2)
 
         def field(key, attr, editable=False, accent=None, small=False):
             w = QWidget()
@@ -127,7 +145,6 @@ class PanelMedicion(QWidget):
             if editable:
                 v.setCursor(Qt.CursorShape.PointingHandCursor)
                 v.setToolTip("Clic para editar")
-                # Agregar icono de lápiz sutil
                 edit_icon = QLabel("✎")
                 edit_icon.setObjectName("edit_icon")
             fl.addWidget(k); fl.addWidget(v)
@@ -136,11 +153,26 @@ class PanelMedicion(QWidget):
             setattr(self, attr, v)
             return w
 
-        lay.addWidget(field("Serie", "lbl_serie", editable=True, accent="blue"))
-        lay.addWidget(field("Año inicio", "lbl_anio", editable=True))
-        lay.addWidget(field("Año actual", "lbl_actual", accent="green"))
+        # ── Fila 1: qué se está midiendo ──────────────────────────────────
+        lay1.addWidget(field("Serie", "lbl_serie", editable=True, accent="blue"))
+        lay1.addWidget(field("Año inicio", "lbl_anio", editable=True))
+        lay1.addWidget(field("Año actual", "lbl_actual", accent="green"))
+        lay1.addWidget(field("Especie", "lbl_especie", small=True))
 
-        # Valor grande
+        arc_w = QWidget(); arc_w.setObjectName("field_sep")
+        al2 = QHBoxLayout(arc_w)
+        al2.setContentsMargins(12, 0, 12, 0); al2.setSpacing(6)
+        ak2 = QLabel("ARCHIVO"); ak2.setObjectName("field_key")
+        self.lbl_archivo = QLabel("—"); self.lbl_archivo.setObjectName("field_val_sm")
+        al2.addWidget(ak2); al2.addWidget(self.lbl_archivo)
+        lay1.addWidget(arc_w)
+
+        lay1.addStretch()
+        self.serial_lbl = QLabel("⬤  Sin conexión")
+        self.serial_lbl.setObjectName("serial_lbl")
+        lay1.addWidget(self.serial_lbl)
+
+        # ── Fila 2: cómo va la medición ───────────────────────────────────
         val_w = QWidget(); val_w.setObjectName("field_sep")
         vl = QHBoxLayout(val_w)
         vl.setContentsMargins(12, 0, 12, 0); vl.setSpacing(5)
@@ -149,34 +181,28 @@ class PanelMedicion(QWidget):
         self.lbl_valor.setObjectName("valor_grande")
         vu = QLabel("mm"); vu.setObjectName("field_key")
         vl.addWidget(vk); vl.addWidget(self.lbl_valor); vl.addWidget(vu)
-        lay.addWidget(val_w)
+        lay2.addWidget(val_w)
 
-        lay.addWidget(field("N° anillos", "lbl_n", accent="blue"))
-        lay.addWidget(field("Promedio", "lbl_prom", small=True))
-        lay.addWidget(field("Especie", "lbl_especie", small=True))
+        lay2.addWidget(field("N° anillos", "lbl_n", accent="blue"))
 
-        # Anomalías
-        anom_w = QWidget(); anom_w.setObjectName("field_sep")
+        dist_w = field("Dist. medida", "lbl_dist", small=True)
+        self.lbl_dist.setToolTip(
+            "Suma de los anillos medidos desde la referencia.\n"
+            "Si el carro avanzó sin registrarse, aparece la lectura del carro\n"
+            "en naranja para que puedas verificar la diferencia.")
+        lay2.addWidget(dist_w)
+
+        lay2.addWidget(field("Promedio", "lbl_prom", small=True))
+
+        anom_w = QWidget()
         al = QHBoxLayout(anom_w)
         al.setContentsMargins(12, 0, 12, 0); al.setSpacing(6)
         ak = QLabel("ANOMALÍAS"); ak.setObjectName("field_key")
         self.lbl_anomalias = QLabel("0"); self.lbl_anomalias.setObjectName("field_val")
         al.addWidget(ak); al.addWidget(self.lbl_anomalias)
-        lay.addWidget(anom_w)
+        lay2.addWidget(anom_w)
 
-        # Archivo — sin borde derecho
-        arc_w = QWidget()
-        al2 = QHBoxLayout(arc_w)
-        al2.setContentsMargins(12, 0, 12, 0); al2.setSpacing(6)
-        ak2 = QLabel("ARCHIVO"); ak2.setObjectName("field_key")
-        self.lbl_archivo = QLabel("—"); self.lbl_archivo.setObjectName("field_val_sm")
-        al2.addWidget(ak2); al2.addWidget(self.lbl_archivo)
-        lay.addWidget(arc_w)
-
-        lay.addStretch()
-        self.serial_lbl = QLabel("⬤  Sin conexión")
-        self.serial_lbl.setObjectName("serial_lbl")
-        lay.addWidget(self.serial_lbl)
+        lay2.addStretch()
 
         self.lbl_serie.mousePressEvent = lambda e: self._edit_serie()
         self.lbl_anio.mousePressEvent  = lambda e: self._edit_anio()
@@ -251,6 +277,33 @@ class PanelMedicion(QWidget):
                   self._btn_cerrar, self._btn_nueva, self._btn_ayuda]:
             lay.addWidget(b)
 
+        # ── Grupo de edición: anillos y desplazamiento de la serie ────────
+        sep_edit = QFrame()
+        sep_edit.setFrameShape(QFrame.Shape.VLine)
+        sep_edit.setFixedHeight(28)
+        sep_edit.setObjectName("bar_sep")
+        lay.addSpacing(6)
+        lay.addWidget(sep_edit)
+        lay.addSpacing(6)
+
+        self._btn_ins_anillo = self._make_mini_btn(
+            "➕", self._insertar_anillo, "blue",
+            "Insertar un anillo en un año dado · Ctrl+I")
+        self._btn_del_anillo = self._make_mini_btn(
+            "➖", self._eliminar_anillo, "red",
+            "Eliminar el anillo de un año dado · Ctrl+D")
+        self._btn_shift_atras = self._make_mini_btn(
+            "◀", lambda: self._mover_serie(-1), "orange",
+            "Mover toda la serie un año hacia atrás · Ctrl+←")
+        self._btn_shift_adelante = self._make_mini_btn(
+            "▶", lambda: self._mover_serie(+1), "orange",
+            "Mover toda la serie un año hacia adelante · Ctrl+→")
+
+        self._mini_btns = [self._btn_ins_anillo, self._btn_del_anillo,
+                           self._btn_shift_atras, self._btn_shift_adelante]
+        for b in self._mini_btns:
+            lay.addWidget(b)
+
         lay.addStretch()
 
         # Botones de anomalías (icono + nombre responsivo)
@@ -271,6 +324,37 @@ class PanelMedicion(QWidget):
 
         self._estilo_anom_btns()
         return self.bottom_bar
+
+    def _make_mini_btn(self, icono, slot, color_key, tooltip=""):
+        """Botón compacto de solo icono para el grupo de edición."""
+        btn = QPushButton(icono)
+        btn.setFixedSize(38, 38)
+        btn.setToolTip(tooltip)
+        btn.clicked.connect(slot)
+        btn.setProperty("color_key", color_key)
+        return btn
+
+    def _estilo_mini_btn(self, btn):
+        t = _tema_mgr.t
+        color_map = {
+            "blue": t['BLUE'], "green": t['GREEN'], "red": t['RED'],
+            "orange": t['ORANGE'], "dim": t['TEXT_DIM'],
+        }
+        fg = color_map.get(btn.property("color_key"), t['TEXT'])
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {t['BG_CARD']};
+                color: {fg};
+                border: 1px solid {fg}55;
+                border-radius: 7px;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 0;
+                min-height: 0;
+            }}
+            QPushButton:hover {{ border: 1px solid {fg}; }}
+            QPushButton:pressed {{ background-color: {t['BG_BAR']}; }}
+        """)
 
     def _make_action_btn(self, icono, texto, slot, color_key, bold=False, tooltip=""):
         btn = QPushButton(f"{icono}  {texto}")
@@ -387,6 +471,11 @@ class PanelMedicion(QWidget):
                 background-color: {t['BG_BAR']};
                 border-bottom: 1px solid {t['BORDER']};
             }}
+            QWidget#info_row_top {{
+                background: transparent;
+                border-bottom: 1px solid {t['BORDER_SOFT']};
+            }}
+            QWidget#info_row {{ background: transparent; }}
             QWidget#field_sep {{
                 background: transparent;
                 border-right: 1px solid {t['BORDER']};
@@ -505,6 +594,9 @@ class PanelMedicion(QWidget):
         for btn in [self._btn_guardar, self._btn_pausa, self._btn_deshacer,
                     self._btn_cerrar, self._btn_nueva, self._btn_ayuda]:
             self._estilo_action_btn(btn, compact)
+        for btn in getattr(self, "_mini_btns", []):
+            self._estilo_mini_btn(btn)
+        self._refresh_dist()
         # Anomalías: compactas si ventana < 1400
         self._estilo_anom_btns(compact=self.width() < 1400)
 
@@ -574,6 +666,11 @@ class PanelMedicion(QWidget):
         sc("Ctrl+Z", self._deshacer)
         sc("Ctrl+P", self._toggle_pausa)
         sc("Ctrl+Y", self._edit_anio)
+        sc("Ctrl+E", self._edit_serie)
+        sc("Ctrl+I", self._insertar_anillo)
+        sc("Ctrl+D", self._eliminar_anillo)
+        sc("Ctrl+Left",  lambda: self._mover_serie(-1))
+        sc("Ctrl+Right", lambda: self._mover_serie(+1))
         sc("F1",     self._ayuda)
         sc("F9",     self._reconectar)
         for anom in ANOMALIAS:
@@ -592,9 +689,8 @@ class PanelMedicion(QWidget):
         archivo = self._cfg['archivo']
         if not os.path.isabs(archivo):
             from PyQt6.QtWidgets import QFileDialog
-            # Usar la última ruta guardada como directorio inicial
-            ultima_ruta = self._cfg.get('ultima_ruta', '')
-            dir_inicial = ultima_ruta if ultima_ruta and os.path.isdir(ultima_ruta) else os.path.expanduser("~")
+            # Carpeta inicial: la última usada para guardar mediciones
+            dir_inicial = cargar_ruta(RUTA_GUARDADO, self._cfg.get('ultima_ruta', ''))
             ruta, _ = QFileDialog.getSaveFileName(
                 self, "Guardar archivo Tucson",
                 os.path.join(dir_inicial, archivo),
@@ -608,13 +704,8 @@ class PanelMedicion(QWidget):
             self._cfg['ultima_ruta'] = os.path.dirname(ruta)
             self.lbl_archivo.setText(os.path.basename(ruta))
             archivo = ruta
-            # Persistir la ruta para futuras sesiones
-            from PyQt6.QtCore import QSettings
-            from constantes import SETTINGS_ORG, SETTINGS_APP, SETTINGS_ULTIMA_RUTA
-            try:
-                QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(SETTINGS_ULTIMA_RUTA, os.path.dirname(ruta))
-            except Exception:
-                pass
+            # Persistir la carpeta de guardado para futuras sesiones
+            guardar_ruta(RUTA_GUARDADO, ruta)
         try:
             escribir_tucson(self._cfg['serie'], self._cfg['anio'], self._meds, archivo)
             self.log("ok", f"✓ Guardado: {os.path.basename(archivo)}")
@@ -728,15 +819,154 @@ class PanelMedicion(QWidget):
                     self._guardar()
                 self.nueva_muestra_solicitada.emit(res)
 
+    # ── Edición de anillos y desplazamiento de la serie ───────────────────────
+    def _refrescar_todo(self):
+        """Refresca barra, estadísticas, vista Tucson y co-datación."""
+        self._refresh_stats()
+        self._update_anomalia_bar()
+        self._update_tucson()
+        self.panel_maestra.actualizar_mediciones(
+            self._meds, self._cfg['anio'], self._cfg['serie'], self._eventos)
+
+    def _insertar_anillo(self):
+        """Inserta un anillo en un año dado. El resto de la serie se desplaza."""
+        anio_ini = self._cfg['anio']
+        n = len(self._meds)
+        if n == 0:
+            anio_obj = anio_ini
+        else:
+            anio_obj, ok = QInputDialog.getInt(
+                self, "Insertar anillo",
+                "Año en el que se insertará el anillo.\n"
+                "Los anillos de ese año en adelante se desplazan un año:",
+                value=anio_ini + n - 1, min=anio_ini, max=anio_ini + n)
+            if not ok:
+                return
+
+        valor_mm, ok2 = QInputDialog.getDouble(
+            self, "Insertar anillo",
+            "Ancho del anillo en mm  ·  usa 0 para un anillo ausente:",
+            value=0.0, min=0.0, max=20.0, decimals=3)
+        if not ok2:
+            return
+
+        idx = anio_obj - anio_ini
+        self._meds.insert(idx, int(round(valor_mm * 1000)))
+        # Las anomalías de ese año en adelante se corren un año
+        self._eventos = {(a + 1 if a >= anio_obj else a): c
+                         for a, c in self._eventos.items()}
+        self.log("warn", f"Anillo insertado en {anio_obj} · {valor_mm:.3f} mm")
+        self._refrescar_todo()
+
+    def _eliminar_anillo(self):
+        """Elimina el anillo de un año dado. El resto de la serie se desplaza."""
+        anio_ini = self._cfg['anio']
+        n = len(self._meds)
+        if n == 0:
+            self.log("warn", "No hay anillos para eliminar.")
+            return
+
+        anio_obj, ok = QInputDialog.getInt(
+            self, "Eliminar anillo",
+            "Año del anillo que se eliminará.\n"
+            "Los anillos posteriores se desplazan un año hacia atrás:",
+            value=anio_ini + n - 1, min=anio_ini, max=anio_ini + n - 1)
+        if not ok:
+            return
+
+        idx = anio_obj - anio_ini
+        quitado = self._meds.pop(idx)
+        # La anomalía de ese año se pierde; las posteriores se corren
+        self._eventos.pop(anio_obj, None)
+        self._eventos = {(a - 1 if a > anio_obj else a): c
+                         for a, c in self._eventos.items()}
+        self.log("warn", f"Anillo eliminado en {anio_obj} · {quitado/1000:.3f} mm")
+        self._refrescar_todo()
+
+    def _mover_serie(self, delta: int):
+        """Desplaza toda la serie `delta` años, arrastrando las anomalías."""
+        nuevo = self._cfg['anio'] + delta
+        if not (-10000 <= nuevo <= 2200):
+            self.log("warn", "El año queda fuera del rango permitido.")
+            return
+        self._cfg['anio'] = nuevo
+        self._eventos = {a + delta: c for a, c in self._eventos.items()}
+        self.lbl_anio.setText(str(nuevo))
+        sentido = "adelante" if delta > 0 else "atrás"
+        self.log("warn", f"Serie movida {abs(delta)} año hacia {sentido} · "
+                         f"inicio {nuevo}")
+        self._refrescar_todo()
+
     # ── Edición en línea ──────────────────────────────────────────────────────
     def _edit_serie(self):
+        anterior = self._cfg['serie']
         val, ok = QInputDialog.getText(self, "Editar nombre de serie",
-                                       "Nuevo nombre:", text=self.lbl_serie.text())
-        if ok and val.strip():
-            self._cfg['serie'] = val.strip()
-            self.lbl_serie.setText(val.strip())
-            self.log("warn", f"Serie cambiada a {val.strip()}")
-            self._update_tucson()
+                                       "Nuevo nombre:", text=anterior)
+        if not (ok and val.strip()):
+            return
+        nuevo = val.strip()
+        if nuevo == anterior:
+            return
+        self._cfg['serie'] = nuevo
+        self.lbl_serie.setText(nuevo)
+        self.log("warn", f"Serie cambiada a {nuevo}")
+        self._sincronizar_archivo(nuevo)
+        self._update_tucson()
+        self.panel_maestra.actualizar_mediciones(
+            self._meds, self._cfg['anio'], nuevo, self._eventos)
+
+    def _sincronizar_archivo(self, serie_nueva: str):
+        """Ajusta el archivo de salida cuando cambia el nombre de la serie.
+
+        Si el archivo todavía no existe en disco, el nombre se actualiza sin
+        preguntar. Si ya fue guardado, se pide confirmación antes de renombrar
+        el .rwl y su sidecar de anomalías.
+        """
+        archivo = self._cfg.get('archivo', '')
+        if not archivo:
+            self._cfg['archivo'] = f"{serie_nueva}.rwl"
+            self.lbl_archivo.setText(self._cfg['archivo'])
+            return
+
+        carpeta = os.path.dirname(archivo)
+        base    = os.path.basename(archivo)
+        _, ext  = os.path.splitext(base)
+        nuevo_base = f"{serie_nueva}{ext or '.rwl'}"
+        if nuevo_base == base:
+            return
+        destino = os.path.join(carpeta, nuevo_base) if carpeta else nuevo_base
+
+        # Todavía no guardado en disco: se actualiza sin más trámite
+        if not os.path.exists(archivo):
+            self._cfg['archivo'] = destino
+            self.lbl_archivo.setText(nuevo_base)
+            self.log("", f"Archivo de salida: {nuevo_base}")
+            return
+
+        resp = QMessageBox.question(
+            self, "Renombrar archivo",
+            f"La serie ahora se llama «{serie_nueva}».\n\n"
+            f"¿Quieres renombrar también el archivo de\n"
+            f"«{base}» a «{nuevo_base}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if resp != QMessageBox.StandardButton.Yes:
+            self.log("", f"El archivo sigue siendo {base}")
+            return
+
+        if os.path.exists(destino):
+            self.log("err", f"Ya existe {nuevo_base}; no se renombró.")
+            return
+        try:
+            os.rename(archivo, destino)
+            sidecar = archivo + ".anom.json"
+            if os.path.exists(sidecar):
+                os.rename(sidecar, destino + ".anom.json")
+            self._cfg['archivo'] = destino
+            self.lbl_archivo.setText(nuevo_base)
+            self.log("ok", f"Archivo renombrado a {nuevo_base}")
+        except Exception as e:
+            self.log("err", f"No se pudo renombrar el archivo: {e}")
 
     def _edit_anio(self):
         val, ok = QInputDialog.getInt(self, "Editar año de inicio",
@@ -759,6 +989,8 @@ class PanelMedicion(QWidget):
             return
         self._worker = SerialWorker(port, self._cfg['baud'])
         self._worker.valor_recibido.connect(self._on_valor)
+        self._worker.avance_carro.connect(self._on_avance_carro)
+        self._worker.referencia_fijada.connect(self._on_referencia_fijada)
         self._worker.log_message.connect(self.log)
         self._worker.conexion_ok.connect(self._on_conexion_ok)
         self._worker.conexion_perdida.connect(self._on_conexion_perdida)
@@ -787,6 +1019,22 @@ class PanelMedicion(QWidget):
     # ─────────────────────────────────────────────────────────────────────────
     # RECEPCIÓN DE VALORES
     # ─────────────────────────────────────────────────────────────────────────
+    def _on_avance_carro(self, mil: int):
+        """Avance del carro desde la referencia, para contrastar con lo medido."""
+        self._avance_carro = mil
+        self._refresh_dist()
+
+    def _on_referencia_fijada(self):
+        """Nueva referencia: la distancia acumulada vuelve a empezar en cero."""
+        self._dist_ref = sum(self._meds)
+        self._avance_carro = 0
+        primera_vez = not self._referencia_fijada
+        self._referencia_fijada = True
+        self._refresh_dist()
+        # Al fijar la referencia el mensaje de espera deja de tener sentido
+        if primera_vez:
+            self._update_tucson()
+
     def _on_valor(self, mil: int):
         if self._paused:
             return
@@ -821,9 +1069,33 @@ class PanelMedicion(QWidget):
         self.lbl_especie.setText(cfg.get('especie', '—'))
         self.lbl_archivo.setText(os.path.basename(cfg['archivo']))
 
+    def _refresh_dist(self):
+        """Distancia medida desde la referencia, contrastada con el carro.
+
+        Muestra la suma de los anillos medidos. Si el carro avanzó más (o
+        menos) de lo registrado, agrega su lectura en naranja para que se vea
+        de inmediato que el carro se movió sin quedar registrado.
+        """
+        if not hasattr(self, 'lbl_dist'):
+            return
+        t = _tema_mgr.t
+        medido = sum(self._meds) - self._dist_ref
+        texto = f"{medido / 1000.0:.3f} mm"
+        color = t['TEXT']
+        if self._avance_carro is not None:
+            # Tolerancia de 5 milésimas para absorber redondeos del encoder
+            if abs(self._avance_carro - medido) > 5:
+                texto = (f"{medido / 1000.0:.3f}  ⚠ carro "
+                         f"{self._avance_carro / 1000.0:.3f}")
+                color = t['ORANGE']
+        self.lbl_dist.setText(texto)
+        self.lbl_dist.setStyleSheet(
+            f"font-size:13px;font-weight:600;background:transparent;color:{color};")
+
     def _refresh_stats(self):
         n = len(self._meds)
         self.lbl_n.setText(str(n))
+        self._refresh_dist()
         if n > 0:
             prom_mm = (sum(self._meds) / n) / 1000.0
             self.lbl_prom.setText(f"{prom_mm:.3f} mm")

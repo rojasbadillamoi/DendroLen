@@ -8,11 +8,13 @@ from PyQt6.QtWidgets import (
     QSpinBox, QComboBox, QPushButton, QFrame, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings
+from PyQt6.QtGui import QKeySequence, QShortcut
 
 from constantes import (
     ESPECIES, BAUD_RATES,
     SETTINGS_ORG, SETTINGS_APP, SETTINGS_ESPECIE,
-    SETTINGS_ULTIMA_RUTA, SETTINGS_ESPECIES_CUSTOM
+    SETTINGS_ULTIMA_RUTA, SETTINGS_ESPECIES_CUSTOM,
+    cargar_ruta, guardar_ruta, RUTA_ABRIR, RUTA_GUARDADO,
 )
 from tema_manager import tema as _tema_mgr
 from serial_worker import listar_puertos, detectar_puerto_auto
@@ -68,6 +70,31 @@ def _guardar_ultima_ruta(ruta: str):
         pass
 
 
+def _leer_eventos_sidecar(ruta_rwl: str) -> dict:
+    """Lee las anomalías guardadas junto a un .rwl (archivo .rwl.anom.json).
+
+    Devuelve {año: código de anomalía}. Sin esto, al continuar una serie las
+    anomalías ya marcadas se perderían al volver a guardar.
+    """
+    try:
+        from tucson_writer import leer_sidecar
+        datos = leer_sidecar(ruta_rwl + ".anom.json")
+        if not datos:
+            return {}
+        eventos = {}
+        for _serie, info in datos.items():
+            if not isinstance(info, dict):
+                continue
+            for anio, cod in (info.get("eventos") or {}).items():
+                try:
+                    eventos[int(anio)] = cod
+                except (TypeError, ValueError):
+                    continue
+        return eventos
+    except Exception:
+        return {}
+
+
 def _leer_mediciones_rwl(ruta: str):
     """
     Lee las mediciones de un archivo .rwl existente.
@@ -91,6 +118,9 @@ def _leer_mediciones_rwl(ruta: str):
                     continue
                 if cod is None:
                     cod, anio = c, a
+                elif c != cod:
+                    # El archivo trae varias series: solo se lee la primera
+                    continue
                 pos = TUCSON_SAMPLE_ID_WIDTH + 4
                 while pos + 6 <= len(linea):
                     try:
@@ -112,11 +142,23 @@ class DialogoConfig(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ruta_retomar = None
+        self._iniciando = False          # evita iniciar dos veces con Enter
         self._port_timer = QTimer(self)
         self._port_timer.setSingleShot(True)
         self._port_timer.timeout.connect(self._auto_detect_port)
         self._build_ui()
+        self._registrar_atajos()
         self._port_timer.start(500)
+
+    def _registrar_atajos(self):
+        """Enter (o Intro del teclado numérico) comienza a medir."""
+        for tecla in ("Return", "Enter"):
+            s = QShortcut(QKeySequence(tecla), self)
+            s.setContext(Qt.ShortcutContext.WindowShortcut)
+            s.activated.connect(self._iniciar)
+        # Además, Enter dentro de los campos de texto
+        self.inp_codigo.returnPressed.connect(self._iniciar)
+        self.inp_archivo.returnPressed.connect(self._iniciar)
 
     def _build_ui(self):
         t = _tema_mgr.t
@@ -494,16 +536,17 @@ class DialogoConfig(QWidget):
         t = _tema_mgr.t
         ruta, _ = QFileDialog.getOpenFileName(
             self, "Abrir archivo de medición",
-            os.path.expanduser("~"),
+            cargar_ruta(RUTA_ABRIR),
             "Tucson (*.rwl *.txt *.TXT);;Todos los archivos (*)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
         if not ruta:
             return
+        guardar_ruta(RUTA_ABRIR, ruta)
         from dialogo_config import _leer_mediciones_rwl
         cod, anio, meds = _leer_mediciones_rwl(ruta)
         if cod:
-            self._load_session(cod, str(anio) if anio else "1850", ruta)
+            self._load_session(cod, str(anio) if anio is not None else "1850", ruta)
             import os as _os
             self.port_hint.setText(f"✓ Archivo cargado: {_os.path.basename(ruta)} · {len(meds)} anillos")
             self.port_hint.setStyleSheet(f"font-size:12px;color:{t['BLUE']};")
@@ -512,26 +555,44 @@ class DialogoConfig(QWidget):
             self.port_hint.setStyleSheet(f"font-size:12px;color:{t['ORANGE']};")
 
     def _escanear_rwl(self):
+        """Busca los .rwl más recientes en las carpetas que el programa recuerda.
+
+        Revisa la carpeta donde se guardó por última vez, la carpeta desde
+        donde se abrió un archivo y el directorio actual, sin repetirlas, y se
+        queda con los cinco archivos modificados más recientemente.
+        """
         import glob
-        from constantes import TUCSON_SAMPLE_ID_WIDTH
-        archivos = sorted(glob.glob(os.path.join(os.getcwd(), "*.rwl")),
-                          key=os.path.getmtime, reverse=True)[:5]
+        carpetas = []
+        for c in (cargar_ruta(RUTA_GUARDADO, ""),
+                  cargar_ruta(RUTA_ABRIR, ""),
+                  os.getcwd()):
+            if c and os.path.isdir(c) and c not in carpetas:
+                carpetas.append(c)
+
+        archivos = []
+        for carpeta in carpetas:
+            for patron in ("*.rwl", "*.RWL"):
+                archivos.extend(glob.glob(os.path.join(carpeta, patron)))
+        try:
+            archivos = sorted(set(archivos), key=os.path.getmtime, reverse=True)[:5]
+        except OSError:
+            archivos = sorted(set(archivos))[:5]
+
         sesiones = []
         for ruta in archivos:
             try:
-                cod, anio, n = "?", "?", 0
-                with open(ruta, encoding="utf-8", errors="ignore") as f:
-                    for linea in f:
-                        linea = linea.strip()
-                        if not linea or linea.startswith(";"): continue
-                        if len(linea) >= 12:
-                            cod = linea[:TUCSON_SAMPLE_ID_WIDTH].strip()
-                            try: anio = linea[TUCSON_SAMPLE_ID_WIDTH:TUCSON_SAMPLE_ID_WIDTH+4].strip()
-                            except: pass
-                        n += 1
-                sesiones.append({"cod": cod, "anio": anio, "n": max(0,(n-1)*10),
-                                  "archivo": os.path.basename(ruta), "ruta": ruta})
-            except: continue
+                cod, anio, meds = _leer_mediciones_rwl(ruta)
+                if not cod:
+                    continue
+                sesiones.append({
+                    "cod":     cod,
+                    "anio":    str(anio) if anio is not None else "?",
+                    "n":       len(meds),
+                    "archivo": os.path.basename(ruta),
+                    "ruta":    ruta,
+                })
+            except Exception:
+                continue
         return sesiones
 
     def _lbl(self, text):
@@ -539,6 +600,44 @@ class DialogoConfig(QWidget):
         l = QLabel(text.upper())
         l.setStyleSheet(f"font-size:12px;color:{t['TEXT_DIM']};letter-spacing:1px;font-weight:700;")
         return l
+
+    def precargar_datos(self, datos: dict):
+        """Rellena la pantalla con datos que llegan desde otra ventana.
+
+        Si viene una ruta a un archivo existente, la serie queda lista para
+        continuar la medición desde donde se dejó.
+        """
+        if not datos:
+            return
+        cod = datos.get("codigo") or datos.get("serie") or ""
+        if cod:
+            self.inp_codigo.setText(cod)          # dispara _auto_archivo
+        anio = datos.get("anio")
+        if anio is not None:
+            try:
+                self.inp_anio.setValue(int(anio))
+            except Exception:
+                pass
+        esp = datos.get("especie")
+        if esp:
+            idx = self.cmb_especie.findText(esp)
+            if idx >= 0:
+                self.cmb_especie.setCurrentIndex(idx)
+            else:
+                self.cmb_especie.setEditText(esp)
+
+        # El archivo se fija al final, porque escribir el código lo reescribe
+        t = _tema_mgr.t
+        ruta = datos.get("ruta_retomar")
+        if ruta and os.path.exists(ruta):
+            self._ruta_retomar = ruta
+            self.inp_archivo.setText(os.path.basename(ruta))
+            _, _, meds = _leer_mediciones_rwl(ruta)
+            self.port_hint.setText(
+                f"✓ Se continuará {os.path.basename(ruta)} · {len(meds)} anillos")
+            self.port_hint.setStyleSheet(f"font-size:12px;color:{t['BLUE']};")
+        elif datos.get("archivo"):
+            self.inp_archivo.setText(os.path.basename(datos["archivo"]))
 
     def _auto_archivo(self):
         codigo = self.inp_codigo.text().strip() or "MUE001"
@@ -581,6 +680,12 @@ class DialogoConfig(QWidget):
         self._ruta_retomar = ruta
 
     def _iniciar(self):
+        # Enter puede llegar por varias vías a la vez; iniciar una sola
+        if self._iniciando:
+            return
+        self._iniciando = True
+        QTimer.singleShot(400, lambda: setattr(self, "_iniciando", False))
+
         codigo   = self.inp_codigo.text().strip() or "MUE001"
         anio     = self.inp_anio.value()
         especie  = self.cmb_especie.currentText().strip() or "No registrada"
@@ -596,6 +701,7 @@ class DialogoConfig(QWidget):
         ruta_abs = self._ruta_retomar
         if ruta_abs and os.path.exists(ruta_abs):
             _, _, meds_previas = _leer_mediciones_rwl(ruta_abs)
+            eventos_previos = _leer_eventos_sidecar(ruta_abs)
             if meds_previas:
                 self.log_retoma = len(meds_previas)
             archivo = ruta_abs
@@ -606,5 +712,5 @@ class DialogoConfig(QWidget):
             "baud": baud, "unidades": unidades, "port": port,
             "meds_previas": meds_previas,
             "eventos_previos": eventos_previos,
-            "ultima_ruta": _cargar_ultima_ruta(),
+            "ultima_ruta": cargar_ruta(RUTA_GUARDADO, _cargar_ultima_ruta()),
         })

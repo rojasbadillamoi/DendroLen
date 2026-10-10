@@ -98,10 +98,12 @@ class SerialWorker(QThread):
     El usuario reconecta con F9.
     """
 
-    valor_recibido   = pyqtSignal(int)     # milésimas de mm
-    log_message      = pyqtSignal(str, str)
-    conexion_ok      = pyqtSignal(str)
-    conexion_perdida = pyqtSignal()
+    valor_recibido    = pyqtSignal(int)     # ancho del anillo, milésimas de mm
+    avance_carro      = pyqtSignal(int)     # avance desde la referencia, milésimas
+    referencia_fijada = pyqtSignal()        # se fijó o refijó la referencia → cero
+    log_message       = pyqtSignal(str, str)
+    conexion_ok       = pyqtSignal(str)
+    conexion_perdida  = pyqtSignal()
 
     def __init__(self, port: str, baud: int = DEFAULT_BAUD, parent=None):
         super().__init__(parent)
@@ -136,6 +138,7 @@ class SerialWorker(QThread):
         # ── Estado acumulado ─────────────────────────────────────────────────
         waiting_reference = True
         last_cumulative   = None   # int, milésimas de mm
+        referencia        = None   # lectura del VRO en el punto de referencia
 
         # ── Bucle de lectura (igual que lector_serial_worker del original) ───
         try:
@@ -159,10 +162,17 @@ class SerialWorker(QThread):
                 if waiting_reference:
                     # Primera lectura válida → fijar baseline (igual al original)
                     last_cumulative   = current_mil
+                    referencia        = current_mil
                     waiting_reference = False
                     self.log_message.emit("ok",
                         f"Referencia fijada: {current_mil/1000:.3f} mm acumulado")
+                    self.referencia_fijada.emit()
+                    self.avance_carro.emit(0)
                     continue
+
+                # El avance del carro desde la referencia se informa SIEMPRE,
+                # también en pausa, para poder contrastarlo con lo ya medido.
+                self.avance_carro.emit(current_mil - referencia)
 
                 if self._paused:
                     continue
@@ -176,8 +186,11 @@ class SerialWorker(QThread):
                 elif delta < 0:
                     # Reset/retroceso del encoder → resincronizar (igual al original)
                     last_cumulative = current_mil
+                    referencia      = current_mil
                     self.log_message.emit("warn",
                         f"Reset detectado — nueva referencia: {current_mil/1000:.3f} mm")
+                    self.referencia_fijada.emit()
+                    self.avance_carro.emit(0)
                 # delta == 0 → ignorar silenciosamente
 
         except Exception as e:

@@ -1,0 +1,19 @@
+# Dependencias de DendroLen
+#
+# Instalación:
+#     pip install -r requirements.txt
+
+PyQt6>=6.4
+pyserial>=3.5
+numpy>=1.23
+pandas>=1.5
+matplotlib>=3.7
+openpyxl>=3.1
+
+# Opcional. Si está presente, el spline de la cronología se resuelve con
+# scipy y la exponencial negativa se ajusta por mínimos cuadrados no
+# lineales; si falta, el spline se resuelve con numpy —mismo resultado— y
+# la exponencial negativa cae a un ajuste log-lineal, que es la
+# aproximación clásica pero no da el mismo valor.
+#
+# scipy>=1.10

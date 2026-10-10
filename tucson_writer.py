@@ -83,16 +83,15 @@ def preview_tucson(codigo: str, anio_inicio: int,
     """
     eventos = eventos or {}
     serie = codigo[:TUCSON_SAMPLE_ID_WIDTH]
-    header = (f"; DendroLen v2.0 · MoiCedrus\n"
-              f"; Serie: {codigo}\n"
-              f"; Año inicio: {anio_inicio}\n")
 
+    # Sin encabezado de comentarios: la serie y el año de inicio ya se
+    # muestran en la barra de información, repetirlos aquí sobra.
     if not mediciones:
-        return header + f"{serie:8s}{anio_inicio:4d}   ···\n"
+        return f"{serie:8s}{anio_inicio:4d}   ···\n"
 
     mods = [998 if m == 999 else m for m in mediciones]
     n = len(mods)
-    lineas: list[str] = [header]
+    lineas: list[str] = []
     idx = 0
 
     # Primera fila parcial

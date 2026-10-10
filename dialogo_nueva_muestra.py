@@ -1,11 +1,15 @@
 # dialogo_nueva_muestra.py — DendroLen
 
+import os
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QSpinBox, QComboBox, QPushButton, QSizePolicy
+    QLineEdit, QSpinBox, QComboBox, QPushButton, QSizePolicy, QFileDialog
 )
 from PyQt6.QtCore import Qt, QSettings
-from constantes import ESPECIES, SETTINGS_ORG, SETTINGS_APP, SETTINGS_ESPECIE
+from constantes import (
+    ESPECIES, SETTINGS_ORG, SETTINGS_APP, SETTINGS_ESPECIE,
+    cargar_ruta, guardar_ruta, RUTA_ABRIR,
+)
 from tema_manager import tema as _tema_mgr
 
 
@@ -23,8 +27,9 @@ class DialogoNuevaMuestra(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Nueva muestra")
-        self.setFixedWidth(380)
+        self.setFixedWidth(420)
         self._result = None
+        self._ruta_retomar = None
         self._build_ui()
 
     def _build_ui(self):
@@ -74,6 +79,26 @@ class DialogoNuevaMuestra(QDialog):
         e_lay.addWidget(self.cmb_especie)
         lay.addLayout(e_lay)
 
+        # Continuar una serie que ya tiene archivo guardado
+        self.btn_abrir = QPushButton("📂  Abrir archivo")
+        self.btn_abrir.setMinimumHeight(34)
+        self.btn_abrir.setStyleSheet(f"""
+            QPushButton {{
+                background-color:{t['BG_CARD']};border:2px solid {t['BORDER']};
+                border-radius:7px;color:{t['BLUE']};font-size:13px;
+                font-weight:600;padding:0 14px;
+            }}
+            QPushButton:hover {{border-color:{t['BLUE']};}}
+        """)
+        self.btn_abrir.clicked.connect(self._abrir_existente)
+        lay.addWidget(self.btn_abrir)
+
+        self.lbl_retoma = QLabel("")
+        self.lbl_retoma.setWordWrap(True)
+        self.lbl_retoma.setStyleSheet(f"font-size:12px;color:{t['TEXT_DIM']};")
+        self.lbl_retoma.hide()
+        lay.addWidget(self.lbl_retoma)
+
         # Botones
         foot = QHBoxLayout(); foot.setSpacing(10)
         foot.addStretch()
@@ -99,6 +124,35 @@ class DialogoNuevaMuestra(QDialog):
         l.setStyleSheet(f"font-size:11px;color:{t['TEXT_DIM']};letter-spacing:1px;font-weight:700;")
         return l
 
+    def _abrir_existente(self):
+        """Carga un .rwl ya guardado para seguir midiendo esa misma serie."""
+        from dialogo_config import _leer_mediciones_rwl
+        t = _tema_mgr.t
+        ruta, _ = QFileDialog.getOpenFileName(
+            self, "Abrir archivo de medición",
+            cargar_ruta(RUTA_ABRIR),
+            "Tucson (*.rwl *.RWL *.txt *.TXT);;Todos los archivos (*)",
+            options=QFileDialog.Option.DontUseNativeDialog
+        )
+        if not ruta:
+            return
+        guardar_ruta(RUTA_ABRIR, ruta)
+        cod, anio, meds = _leer_mediciones_rwl(ruta)
+        if not cod:
+            self.lbl_retoma.setText("⚠  No se pudo leer ese archivo.")
+            self.lbl_retoma.setStyleSheet(f"font-size:12px;color:{t['ORANGE']};")
+            self.lbl_retoma.show()
+            return
+        self._ruta_retomar = ruta
+        self.inp_codigo.setText(cod)
+        if anio is not None:
+            self.spn_anio.setValue(int(anio))
+        self.lbl_retoma.setText(
+            f"✓ {os.path.basename(ruta)} · {len(meds)} anillos · "
+            f"se continuará desde el año {(anio or 0) + len(meds)}")
+        self.lbl_retoma.setStyleSheet(f"font-size:12px;color:{t['BLUE']};")
+        self.lbl_retoma.show()
+
     def _confirmar(self):
         codigo = self.inp_codigo.text().strip()
         if not codigo: self.inp_codigo.setFocus(); return
@@ -107,7 +161,8 @@ class DialogoNuevaMuestra(QDialog):
         self._result = {
             "codigo": codigo, "anio": self.spn_anio.value(),
             "serie": codigo, "especie": especie,
-            "archivo": f"{codigo}.rwl",
+            "archivo": self._ruta_retomar or f"{codigo}.rwl",
+            "ruta_retomar": self._ruta_retomar,
         }
         self.accept()
 

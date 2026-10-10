@@ -1,4 +1,4 @@
-# 🌲 DendroLen v2.0
+# 🌲 DendroLen v2.1
 
 **Aplicación de escritorio para medición de anillos de árboles en tiempo real con carro de medición USB-serial.**
 
@@ -34,6 +34,19 @@ Incluye un módulo de co-datación en vivo con serie maestra, que calcula y visu
 - **Fondos coloreados por calidad** de cada segmento (verde oscuro/claro, naranja, rojo según umbrales de r)
 - **Zoom interactivo** con rueda del mouse, doble clic para autorange
 - **Formatos de serie maestra soportados**: Tucson (`.rwl`, `.txt`), CooRecorder (`.wid`), Excel (`.xlsx`, `.xls`), CSV
+
+### Cronologías
+
+- **Construcción de cronologías estandarizadas** sin salir del programa, en sus tres variantes: cruda, estándar y residual
+- **Métodos de ajuste**: spline de Cook y Peters (rigidez configurable, 32 años por defecto), exponencial negativa, recta, media móvil y media
+- **Agregación por media biponderada** de Tukey
+- **Mismo núcleo numérico que DPI**: ambos programas entregan los mismos índices y las mismas correlaciones, verificado hasta 1×10⁻¹¹ en valor relativo
+
+### Edición durante la medición
+
+- **Insertar y eliminar anillos** en cualquier posición de la serie
+- **Desplazar la serie completa** en el tiempo, sin reiniciar la sesión
+- **Retomar una muestra existente**: el asistente abre un archivo ya medido, lee su sidecar de anomalías y precarga los datos
 
 ### Registro de anomalías
 
@@ -76,7 +89,7 @@ Las anomalías se exportan en un sidecar `.rwl.anom.json` con metadatos completo
 ### Dependencias Python
 
 ```bash
-pip install PyQt6 matplotlib pyserial pandas numpy openpyxl
+pip install -r requirements.txt
 ```
 
 ### Hardware
@@ -99,7 +112,7 @@ source venv/bin/activate    # Linux/macOS
 # venv\Scripts\activate     # Windows
 
 # Instalar dependencias
-pip install PyQt6 matplotlib pyserial pandas numpy openpyxl
+pip install -r requirements.txt
 
 # Ejecutar
 python3 main_dendro.py
@@ -138,6 +151,7 @@ DendroLen/
 ├── serial_worker.py            # Hilo QThread de lectura del puerto serie
 ├── serie_maestra.py            # Panel de co-datación con serie maestra
 ├── tucson_writer.py            # Escritura de archivos Tucson y sidecar JSON
+├── cronologia.py               # Estandarización y construcción de cronologías
 └── modulo_unir.py              # Módulo integrado de unión de archivos .rwl
 ```
 
@@ -263,7 +277,9 @@ El panel de co-datación (parte inferior de la pantalla de medición) muestra:
 
 Si usas DendroLen en una publicación científica, por favor cítalo así:
 
-> Rojas Badilla, M. E. (2026). *DendroLen* (Versión 2.0.0) [Software]. Zenodo. https://doi.org/10.5281/zenodo.20616207
+> Rojas Badilla, M. E. (2026). *DendroLen* [Software]. Zenodo. https://doi.org/10.5281/zenodo.20616206
+
+Ese DOI es el **de concepto**: apunta siempre a la versión más reciente, así que no hay que cambiarlo al publicar una versión nueva. Si necesitas citar una versión exacta, usa el DOI de esa versión, que Zenodo muestra en la página del registro.
 
 El archivo `CITATION.cff` del repositorio contiene los metadatos completos para gestores de referencias bibliográficas. GitHub también provee la cita en formato APA y BibTeX mediante el botón "Cite this repository" en la barra lateral del repositorio.
 

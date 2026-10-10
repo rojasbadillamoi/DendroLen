@@ -1,7 +1,7 @@
-# constantes.py — DendroLen v2.0
+# constantes.py — DendroLen v2.1
 
 APP_NAME    = "DendroLen"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 APP_AUTHOR  = "Moisés E. Rojas Badilla"
 APP_EMAIL   = "moisese.rojasbadilla@gmail.com"
 
@@ -91,6 +91,11 @@ ATAJOS = [
     ("Ctrl+Z",    "Deshacer / remedir la última medición"),
     ("Ctrl+P",    "Pausar / reanudar recepción del carro"),
     ("Ctrl+Y",    "Editar año de inicio en caliente"),
+    ("Ctrl+E",    "Editar el nombre de la serie"),
+    ("Ctrl+I",    "Insertar un anillo en un año dado"),
+    ("Ctrl+D",    "Eliminar el anillo de un año dado"),
+    ("Ctrl+←",    "Mover toda la serie un año hacia atrás"),
+    ("Ctrl+→",    "Mover toda la serie un año hacia adelante"),
     ("F1",        "Mostrar esta ayuda"),
     ("F2",        "Marcar anomalía: Frost ring (FR)"),
     ("F3",        "Marcar anomalía: Light ring (LR)"),
@@ -111,6 +116,45 @@ SETTINGS_TEMA    = "tema"
 SETTINGS_ESPECIE = "ultima_especie"
 SETTINGS_ULTIMA_RUTA = "ultima_ruta_guardado"
 SETTINGS_ESPECIES_CUSTOM = "especies_custom"
+
+# ── RUTAS RECORDADAS ──────────────────────────────────────────────────────────
+# Cada operación recuerda su propia carpeta de forma independiente, para que
+# guardar una medición no cambie la carpeta desde donde se cargan las maestras.
+RUTA_GUARDADO = "guardado"        # .rwl que se guardan al medir
+RUTA_ABRIR    = "abrir"           # .rwl que se abren para retomar
+RUTA_MAESTRA  = "maestra"         # series maestras de co-datación
+RUTA_UNIR     = "unir"            # módulo Unir: misma carpeta para cargar y guardar
+
+
+def cargar_ruta(clave: str, por_defecto: str = "") -> str:
+    """Devuelve la última carpeta usada para `clave`.
+
+    Si no hay ninguna guardada o ya no existe, devuelve `por_defecto`
+    (o la carpeta del usuario si tampoco se entrega).
+    """
+    import os
+    try:
+        from PyQt6.QtCore import QSettings
+        v = QSettings(SETTINGS_ORG, SETTINGS_APP).value(f"rutas/{clave}", "")
+        if v and os.path.isdir(v):
+            return v
+    except Exception:
+        pass
+    if por_defecto and os.path.isdir(por_defecto):
+        return por_defecto
+    return os.path.expanduser("~")
+
+
+def guardar_ruta(clave: str, ruta: str) -> None:
+    """Guarda la carpeta de `ruta` como última usada para `clave`."""
+    import os
+    try:
+        from PyQt6.QtCore import QSettings
+        carpeta = ruta if os.path.isdir(ruta) else os.path.dirname(ruta)
+        if carpeta:
+            QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(f"rutas/{clave}", carpeta)
+    except Exception:
+        pass
 
 # Tamaño de fuente base — se aplica via QApplication.setFont() Y stylesheet
 # Estos valores se ajustan automáticamente al tamaño de pantalla via ajustar_fuente_para_pantalla()

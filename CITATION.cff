@@ -8,16 +8,19 @@ abstract: >
   cálculo de correlación global y deslizante (estilo COFECHA), registro
   de anomalías (frost ring, light ring, missing ring, anillo falso,
   fuego, golpe), y exportación al formato Tucson estándar (.rwl)
-  compatible con COFECHA, ARSTAN y dplR. Funcionalidad integrada para
-  unir múltiples archivos .rwl. Multiplataforma (Linux, macOS, Windows).
-  Forma parte de la suite MoiCedrus.
+  compatible con COFECHA, ARSTAN y dplR. Construye cronologías
+  estandarizadas con el mismo núcleo numérico que DPI. Funcionalidad
+  integrada para unir múltiples archivos .rwl. Multiplataforma (Linux,
+  macOS, Windows). Forma parte de la suite MoiCedrus.
 authors:
   - family-names: "Rojas Badilla"
     given-names: "Moisés E."
     orcid: "https://orcid.org/0000-0002-1101-2280"
-version: "2.0.0"
-date-released: "2026-06-08"
-doi: 10.5281/zenodo.20616207
+version: "2.1.0"
+date-released: "2026-10-10"
+# DOI de concepto: apunta siempre a la versión más reciente. El DOI de la
+# 2.0.0 era 10.5281/zenodo.20616207, que es el de esa versión y no el general.
+doi: 10.5281/zenodo.20616206
 repository-code: "https://github.com/rojasbadillamoi/DendroLen"
 url: "https://github.com/rojasbadillamoi/DendroLen"
 license: GPL-3.0

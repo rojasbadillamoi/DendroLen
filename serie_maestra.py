@@ -26,155 +26,274 @@ from tema_manager import tema as _tema_mgr
 # LECTORES DE FORMATO
 # ─────────────────────────────────────────────────────────────────────────────
 
-def leer_rwl(ruta: str) -> pd.Series:
+def _es_anio(v) -> bool:
+    """Un año plausible para dendrocronología, incluidas series subfósiles."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return f == int(f) and -10000 <= f <= 2200
+
+
+def _escala_tucson(valores: list) -> float:
+    """Decide el divisor de un bloque de valores Tucson.
+
+    El formato clásico guarda milésimas de milímetro como enteros (1450 = 1.45
+    mm), pero algunos programas escriben directamente milímetros con decimales.
+    Si aparece cualquier decimal se asume que ya está en mm; si son todos
+    enteros y grandes, se dividen por mil.
     """
-    Lee un archivo Tucson (.rwl / .txt / .TXT).
-    Robusto ante variantes de formato: ignora comentarios, líneas cortas,
-    y valores reservados (-9999, 999).
-    Devuelve pd.Series con índice = año (int), valores = mm (float).
+    if not valores:
+        return 1.0
+    if any(float(v) != int(float(v)) for v in valores):
+        return 1.0
+    mediana = sorted(abs(float(v)) for v in valores)[len(valores) // 2]
+    return 1000.0 if mediana > 20 else 1.0
+
+
+def leer_rwl(ruta: str) -> pd.Series:
+    """Lee un archivo Tucson (.rwl / .txt), de una o de varias series.
+
+    Tolera comentarios, líneas cortas, terminadores y valores decimales. Si el
+    archivo trae varias series —lo habitual en una cronología— devuelve el
+    promedio por año, que es justamente la serie de referencia buscada.
     """
     from constantes import TUCSON_SAMPLE_ID_WIDTH, TUCSON_TERMINATOR
-    datos = {}
+
+    series: dict[str, dict[int, float]] = {}
+    crudos: list[float] = []
+
     with open(ruta, encoding="utf-8", errors="ignore") as f:
         for linea in f:
             linea = linea.rstrip()
-            if not linea or linea.startswith(";"):
+            if not linea or linea.lstrip().startswith((";", "#")):
                 continue
-            # Necesitamos al menos código(8) + año(4) + un valor(6) = 18 chars
-            if len(linea) < 18:
+            if len(linea) < 14:
                 continue
-            # Extraer año de la posición 8:12
+
+            sid = linea[:TUCSON_SAMPLE_ID_WIDTH].strip() or "SERIE"
             try:
-                anio = int(linea[8:12].strip())
+                anio = int(linea[TUCSON_SAMPLE_ID_WIDTH:TUCSON_SAMPLE_ID_WIDTH + 4])
             except (ValueError, IndexError):
                 continue
-            # Validar rango de año razonable
             if not (-10000 <= anio <= 2200):
                 continue
-            # Leer valores en campos de 6 chars a partir de la posición 12
-            pos = 12
-            while pos + 6 <= len(linea):
-                campo = linea[pos:pos+6].strip()
+
+            # Campos de ancho fijo; si no calzan, se reparte por espacios
+            resto = linea[TUCSON_SAMPLE_ID_WIDTH + 4:]
+            campos = [resto[i:i + 6].strip() for i in range(0, len(resto), 6)]
+            if not any(campos) or any(
+                    c and not _numerico(c) for c in campos):
+                campos = resto.split()
+
+            for campo in campos:
                 if not campo:
-                    pos += 6
+                    anio += 1
                     continue
                 try:
-                    v = int(campo)
+                    v = float(campo)
                 except ValueError:
                     break
-                # Terminadores
-                if v == TUCSON_TERMINATOR or v == -9999:
+                if v == TUCSON_TERMINATOR or v in (-9999, -999):
                     break
-                # Valor 999 es reservado (reemplazado por 998 al escribir),
-                # pero al leer lo aceptamos como medición válida
                 if v > 0:
-                    datos[anio] = v / 1000.0   # milésimas → mm
+                    series.setdefault(sid, {})[anio] = v
+                    crudos.append(v)
                 anio += 1
-                pos += 6
-    if not datos:
-        raise ValueError(f"No se encontraron mediciones en {os.path.basename(ruta)}")
-    return pd.Series(datos).sort_index()
+
+    if not series:
+        raise ValueError(
+            f"No se encontraron mediciones en {os.path.basename(ruta)}.\n"
+            "Se esperaba formato Tucson: 8 caracteres de código, 4 de año y "
+            "valores en campos de 6.")
+
+    divisor = _escala_tucson(crudos)
+    marcos = {k: pd.Series(d).sort_index() / divisor for k, d in series.items()}
+
+    if len(marcos) == 1:
+        serie = next(iter(marcos.values()))
+        serie.attrs["detalle"] = "1 serie"
+        serie.attrs["info_crono"] = None
+        return serie
+
+    # Varias series: se construye la cronología igual que el botón Crono de
+    # DPI (spline de Cook rigidez 32, residual, media biponderada).
+    try:
+        from cronologia import construir_cronologia, describir
+        crono, info = construir_cronologia(marcos)
+        crono.attrs["detalle"] = describir(info)
+        crono.attrs["info_crono"] = info
+        return crono
+    except Exception as e:
+        # Si algo falla, no se pierde el archivo: se promedian los anchos
+        serie = pd.concat(list(marcos.values()), axis=1).mean(axis=1, skipna=True)
+        serie = serie.sort_index()
+        serie.attrs["detalle"] = f"promedio simple de {len(marcos)} series ({e})"
+        serie.attrs["info_crono"] = None
+        return serie
+
+
+def _numerico(txt: str) -> bool:
+    try:
+        float(txt)
+        return True
+    except ValueError:
+        return False
 
 
 def leer_wid(ruta: str) -> pd.Series:
-    """
-    Lee un archivo CooRecorder (.wid).
-    Formato: líneas con "año valor" o CSV simple.
+    """Lee un archivo de dos columnas: año y valor.
+
+    Cubre los .wid de CooRecorder y cualquier texto plano con un año y un
+    valor por línea, separados por espacios, tabulaciones, coma o punto y coma.
     """
     datos = {}
     with open(ruta, encoding="utf-8", errors="ignore") as f:
         for linea in f:
             linea = linea.strip()
-            if not linea or linea.startswith("#"):
+            if not linea or linea.startswith(("#", ";")):
                 continue
-            partes = re.split(r"[\s,;]+", linea)
-            if len(partes) >= 2:
-                try:
-                    anio = int(partes[0])
-                    val  = float(partes[1])
-                    datos[anio] = val
-                except ValueError:
-                    continue
+            # Primero sin coma: así "1853;1,45" conserva su decimal.
+            partes = re.split(r"[\s;\t]+", linea)
+            coma_es_decimal = len(partes) >= 2
+            if not coma_es_decimal:
+                partes = re.split(r"[\s,;]+", linea)
+            if len(partes) < 2:
+                continue
+            try:
+                crudo = partes[1].replace(",", ".") if coma_es_decimal else partes[1]
+                anio = int(float(partes[0]))
+                val = float(crudo)
+            except ValueError:
+                continue          # encabezado u otra línea no numérica
+            if -10000 <= anio <= 2200:
+                datos[anio] = val
     if not datos:
-        raise ValueError(f"No se encontraron datos en {ruta}")
-    return pd.Series(datos).sort_index()
+        raise ValueError(
+            f"No se encontraron pares año/valor en {os.path.basename(ruta)}.")
+    serie = pd.Series(datos).sort_index()
+    serie.attrs["detalle"] = "dos columnas"
+    return serie
+
+
+def _cargar_tabla(ruta: str) -> pd.DataFrame:
+    """Abre Excel o texto delimitado probando separadores y decimales."""
+    ext = os.path.splitext(ruta)[1].lower()
+    if ext in (".xlsx", ".xls", ".xlsm"):
+        return pd.read_excel(ruta, header=0)
+
+    intentos = [
+        dict(sep=None, engine="python"),
+        dict(sep=";", decimal=","),
+        dict(sep=";"),
+        dict(sep="\t"),
+        dict(sep=","),
+    ]
+    ultimo = None
+    for kw in intentos:
+        try:
+            df = pd.read_csv(ruta, header=0, **kw)
+            if df.shape[1] >= 2:
+                return df
+            ultimo = df
+        except Exception:
+            continue
+    if ultimo is not None:
+        return ultimo
+    raise ValueError(f"No se pudo interpretar {os.path.basename(ruta)} como tabla.")
 
 
 def leer_xlsx_csv(ruta: str) -> pd.Series:
+    """Lee Excel o CSV localizando las columnas de año y de valor.
+
+    No se asume que el año esté en la primera columna: se busca la que
+    contiene años plausibles. Así funcionan tanto las tablas de año y valor
+    como las que traen antes una columna con el código de la serie.
     """
-    Lee un archivo Excel (.xlsx) o CSV (.csv) con co-datación.
-
-    Formato esperado: cualquier tabla donde:
-      - La PRIMERA columna contiene los años (enteros).
-        El encabezado puede llamarse 'año', 'year', 'yr', 'Year', 'AÑO', etc.
-      - La SEGUNDA columna contiene los anchos de anillo en mm.
-        El encabezado puede tener cualquier nombre.
-
-    La función ignora el nombre de los encabezados y trabaja por posición.
-    Las filas con años o valores no numéricos se descartan automáticamente.
-    El solapamiento temporal con la serie en medición se calcula en tiempo real,
-    por lo que no es necesario recortar la serie maestra — puede tener miles de años.
-    """
-    ext = os.path.splitext(ruta)[1].lower()
-    if ext in (".xlsx", ".xls", ".xlsm"):
-        df = pd.read_excel(ruta, header=0)
-    else:
-        # CSV: intentar detectar separador automáticamente
-        try:
-            df = pd.read_csv(ruta, sep=None, engine="python", header=0)
-        except Exception:
-            df = pd.read_csv(ruta, sep=",", header=0)
-
+    df = _cargar_tabla(ruta)
     if df.shape[1] < 2:
-        raise ValueError("El archivo debe tener al menos dos columnas (año, valor).")
+        raise ValueError("El archivo necesita al menos dos columnas: año y valor.")
 
-    # Usar las dos primeras columnas independientemente del nombre
-    col_anio = df.iloc[:, 0]
-    col_val  = df.iloc[:, 1]
+    # Texto con coma decimal → número
+    conv = {}
+    for i, col in enumerate(df.columns):
+        s = df.iloc[:, i]
+        if not pd.api.types.is_numeric_dtype(s):
+            # Texto: puede traer coma decimal o espacios de miles
+            s = (s.astype(str).str.strip()
+                 .str.replace(" ", "", regex=False)
+                 .str.replace(",", ".", regex=False))
+        conv[i] = pd.to_numeric(s, errors="coerce")
 
-    # Convertir a numérico, descartar filas no numéricas
-    anios = pd.to_numeric(col_anio, errors="coerce")
-    vals  = pd.to_numeric(col_val,  errors="coerce")
+    # Columna de año: la de más valores que parecen años
+    mejor_anio, mejor_puntaje = None, 0
+    for i in range(df.shape[1]):
+        s = conv[i].dropna()
+        if s.empty:
+            continue
+        puntaje = sum(_es_anio(v) for v in s) / max(len(conv[i]), 1)
+        if puntaje > mejor_puntaje and puntaje >= 0.6 and s.is_unique:
+            mejor_anio, mejor_puntaje = i, puntaje
+    if mejor_anio is None:
+        raise ValueError(
+            "No se encontró una columna con años entre −10.000 y 2.200.")
 
-    mask  = anios.notna() & vals.notna()
-    anios = anios[mask].astype(int)
-    vals  = vals[mask].astype(float)
+    # Columna de valor: la primera numérica a la derecha del año
+    candidatas = [i for i in range(mejor_anio + 1, df.shape[1])
+                  if conv[i].notna().sum() > 0]
+    if not candidatas:
+        candidatas = [i for i in range(df.shape[1])
+                      if i != mejor_anio and conv[i].notna().sum() > 0]
+    if not candidatas:
+        raise ValueError("No se encontró una columna de valores junto a los años.")
+    col_val = candidatas[0]
 
-    if len(anios) == 0:
-        raise ValueError("No se encontraron datos numéricos válidos en las dos primeras columnas.")
+    anios = conv[mejor_anio]
+    vals = conv[col_val]
+    mask = anios.notna() & vals.notna()
+    if not mask.any():
+        raise ValueError("Las columnas de año y valor no comparten filas válidas.")
 
-    serie = pd.Series(vals.values, index=anios.values).sort_index()
-    # Eliminar duplicados de año conservando el primero
+    serie = pd.Series(vals[mask].astype(float).values,
+                      index=anios[mask].astype(int).values).sort_index()
     serie = serie[~serie.index.duplicated(keep="first")]
+    nom_anio = str(df.columns[mejor_anio])
+    nom_val = str(df.columns[col_val])
+    serie.attrs["detalle"] = f"columnas «{nom_anio}» y «{nom_val}»"
     return serie
 
 
 def leer_serie_maestra(ruta: str) -> tuple[pd.Series, str]:
+    """Detecta el formato y devuelve (serie, nombre).
+
+    Acepta Tucson (.rwl/.txt), CooRecorder (.wid), Excel y CSV, en mayúsculas
+    o minúsculas. Si el lector que corresponde a la extensión no consigue nada,
+    se prueban los demás antes de darse por vencido: un .txt puede contener
+    tanto una cronología Tucson como una tabla de dos columnas.
     """
-    Auto-detecta el formato y devuelve (serie, nombre).
-    Soporta: Tucson .rwl/.txt, CooRecorder .wid, Excel .xlsx, CSV .csv
-    """
-    ext    = os.path.splitext(ruta)[1].lower()
+    ext = os.path.splitext(ruta)[1].lower()
     nombre = os.path.splitext(os.path.basename(ruta))[0]
-    if ext in (".rwl", ".txt"):
-        return leer_rwl(ruta), nombre
+
+    if ext in (".xlsx", ".xls", ".xlsm", ".csv"):
+        orden = [leer_xlsx_csv, leer_wid, leer_rwl]
     elif ext == ".wid":
-        return leer_wid(ruta), nombre
-    elif ext in (".xlsx", ".xls", ".xlsm", ".csv"):
-        return leer_xlsx_csv(ruta), nombre
-    else:
-        # Fallback: probar todos los formatos
-        for fn in [leer_rwl, leer_wid, leer_xlsx_csv]:
-            try:
-                return fn(ruta), nombre
-            except Exception:
-                continue
-        raise ValueError(f"No se pudo leer el archivo: {os.path.basename(ruta)}")
+        orden = [leer_wid, leer_xlsx_csv, leer_rwl]
+    else:                                   # .rwl, .txt, .crn o desconocida
+        orden = [leer_rwl, leer_wid, leer_xlsx_csv]
 
+    errores = []
+    for fn in orden:
+        try:
+            serie = fn(ruta)
+            if serie is not None and len(serie) > 0:
+                return serie, nombre
+        except Exception as e:
+            errores.append(f"{fn.__name__}: {e}")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ESTADÍSTICAS DE CORRELACIÓN
-# ─────────────────────────────────────────────────────────────────────────────
+    raise ValueError(
+        f"No se pudo leer {os.path.basename(ruta)} en ninguno de los formatos "
+        f"admitidos.\n\n" + "\n".join(errores[:3]))
+
 
 def _diff_log(serie: pd.Series) -> pd.Series:
     return np.log(serie.clip(lower=0.01)).diff().dropna()
@@ -456,27 +575,33 @@ class PanelMaestra(QWidget):
     # ── Carga de maestra ──────────────────────────────────────────────────────
     def _cargar_maestra(self):
         t = _tema_mgr.t
+        from constantes import cargar_ruta, guardar_ruta, RUTA_MAESTRA
         ruta, _ = QFileDialog.getOpenFileName(
             self, "Cargar serie de referencia",
-            os.path.expanduser("~"),
-            "Tucson / CooRecorder (*.rwl *.txt *.TXT *.wid);;Excel (*.xlsx *.xls);;CSV (*.csv);;Todos los archivos (*)",
+            cargar_ruta(RUTA_MAESTRA),
+            "Series de referencia (*.rwl *.RWL *.txt *.TXT *.wid *.WID *.crn *.CRN *.xlsx *.XLSX *.xls *.csv *.CSV);;Tucson (*.rwl *.RWL *.txt *.TXT *.crn *.CRN);;CooRecorder (*.wid *.WID);;Excel (*.xlsx *.XLSX *.xls);;CSV (*.csv *.CSV);;Todos los archivos (*)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
         if not ruta:
             return
+        guardar_ruta(RUTA_MAESTRA, ruta)
         try:
             serie, nombre = leer_serie_maestra(ruta)
             self._serie_maestra = serie
             self._nombre_maestra = nombre
+            detalle = serie.attrs.get("detalle", "")
+            extra = f"  ·  {detalle}" if detalle else ""
             self.lbl_maestra.setText(
                 f"  🌲  {nombre}  ·  {len(serie)} anillos  "
-                f"({int(serie.index.min())}–{int(serie.index.max())})")
+                f"({int(serie.index.min())}–{int(serie.index.max())}){extra}")
             self.lbl_maestra.setStyleSheet(
                 f"font-size:12px;color:{t['GREEN']};background-color:{t['BG_BAR']};"
                 f"padding-left:14px;border-bottom:1px solid {t['BORDER']};")
             self._redibujar()
         except Exception as e:
-            self.lbl_maestra.setText(f"  ⚠  Error: {e}")
+            resumen = str(e).split("\n")[0]
+            self.lbl_maestra.setText(f"  ⚠  {resumen}")
+            self.lbl_maestra.setToolTip(str(e))
             self.lbl_maestra.setStyleSheet(
                 f"font-size:12px;color:{t['RED']};background-color:{t['BG_BAR']};"
                 f"padding-left:14px;border-bottom:1px solid {t['BORDER']};")
@@ -504,6 +629,30 @@ class PanelMaestra(QWidget):
         anios_a = list(range(self._anio_inicio,
                              self._anio_inicio + len(self._meds)))
         vals_a  = [m / 1000.0 for m in self._meds]
+        # Si la maestra es una cronología estandarizada, la serie en medición
+        # se lleva al mismo espacio con idénticos parámetros. Así las dos
+        # curvas son comparables y la correlación no mezcla unidades.
+        self._nota_estandar = ""
+        info_c = (self._serie_maestra.attrs.get("info_crono")
+                  if self._serie_maestra is not None else None)
+        if info_c and len(vals_a) >= 15:
+            try:
+                from cronologia import normalizar_serie
+                idx = normalizar_serie(
+                    pd.Series(vals_a, index=anios_a),
+                    tipo=info_c.get("tipo", "residual"),
+                    metodo=info_c.get("metodo", "spline"),
+                    rigidez=info_c.get("rigidez"),
+                    orden_ar=info_c.get("orden_ar"))
+                if len(idx) >= 5:
+                    anios_a = list(idx.index.astype(int))
+                    vals_a = list(idx.values.astype(float))
+                    self._nota_estandar = "serie estandarizada igual que la cronología"
+            except Exception:
+                pass
+        elif info_c:
+            self._nota_estandar = (f"serie sin estandarizar: hacen falta 15 anillos "
+                                   f"(van {len(vals_a)})")
         tiene_maestra = (self._serie_maestra is not None
                          and len(self._serie_maestra) > 0)
 
@@ -627,6 +776,7 @@ class PanelMaestra(QWidget):
 
         # ── Texto de correlaciones ────────────────────────────────────────────
         r_tot = r_global(anios_a, vals_a, anios_m, vals_m)
+        nota = getattr(self, "_nota_estandar", "")
         sa = pd.Series(vals_a, index=anios_a)
         sm = pd.Series(vals_m, index=anios_m)
         n_ov = len(sa.index.intersection(sm.index))
@@ -660,6 +810,9 @@ class PanelMaestra(QWidget):
             f"&nbsp;&nbsp;&nbsp;"
             + "&nbsp;&nbsp;".join(partes_vent)
         )
+        if nota:
+            html += (f"&nbsp;&nbsp;&nbsp;"
+                     f"<span style='color:{t['TEXT_DIM']}'>· {nota}</span>")
         self.lbl_r_bar.setText(html)
 
     def _dibujar_vacio(self, t):

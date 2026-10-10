@@ -22,12 +22,13 @@ from PyQt6.QtGui import QFont, QColor, QBrush
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog, QMessageBox,
-    QComboBox, QFrame, QLineEdit, QGroupBox, QRadioButton,
+    QComboBox, QFrame, QLineEdit, QGroupBox, QRadioButton, QCheckBox,
     QButtonGroup, QApplication,
 )
 
 from constantes import (
     TUCSON_SAMPLE_ID_WIDTH, TUCSON_TERMINATOR, TUCSON_VALUES_PER_LINE,
+    cargar_ruta, guardar_ruta, RUTA_UNIR,
 )
 from tema_manager import tema as _tema_mgr
 
@@ -42,6 +43,44 @@ def _clave_orden_natural(texto: str) -> list:
     como ['a1','a10','a2'] (orden lexicográfico)."""
     partes = re.split(r'(\d+)', texto)
     return [int(p) if p.isdigit() else p.lower() for p in partes]
+
+
+def clave_codigo_dendro(codigo: str) -> tuple:
+    """Ordena códigos dendrocronológicos por sitio, árbol y radio.
+
+    Un código como QLH107A se lee como tres cosas distintas, no como una
+    cadena: el SITIO (QLH), el número de ÁRBOL (107) y el RADIO o dígito
+    verificador (A). Ordenar alfabéticamente mezcla los tres y produce
+    secuencias como COS1, COS10, COS2; ordenar solo por número natural pone
+    juntos radios de árboles distintos cuando los sufijos difieren en largo.
+
+    Esta clave separa las tres partes y ordena por sitio, después por número
+    de árbol como NÚMERO, y por último por radio. Así QLH107A, QLH107B,
+    QLH108A quedan en el orden en que uno los mira en la mesa.
+
+    Casos que cubre:
+      QLH107A   -> ('QLH', 107, 'A')          radio simple
+      COS300    -> ('COS', 300, '')           sin radio
+      QLP006bA  -> ('QLP', 6, 'BA')           radio compuesto
+      SAN001C_2 -> ('SAN', 1, 'C_2')          renombrado por duplicado
+      raro-01   -> ('RARO-', 1, '')           cualquier prefijo con símbolos
+
+    Si el código no trae número, cae al final del grupo de su sitio, con el
+    resto ordenado de forma natural.
+    """
+    txt = str(codigo).strip()
+    m = re.match(r"^(.*?)(\d+)(.*)$", txt)
+    if not m:
+        return (txt.upper(), 10 ** 9, "", _clave_orden_natural(txt))
+    prefijo, numero, sufijo = m.group(1), int(m.group(2)), m.group(3)
+    return (prefijo.upper(), numero, sufijo.upper(),
+            _clave_orden_natural(txt))
+
+
+def ordenar_series(series_dict: dict) -> dict:
+    """Devuelve el mismo diccionario con las series ordenadas por código."""
+    return {k: series_dict[k]
+            for k in sorted(series_dict, key=clave_codigo_dendro)}
 
 
 def leer_tucson_multi(ruta: str) -> dict:
@@ -426,6 +465,19 @@ class DialogoUnirRwl(QDialog):
             "Combinar valores por año (promediar) — útil si son re-mediciones")
         self.grupo_radio_dup.addButton(self.rb_combinar)
         v_dup.addWidget(self.rb_combinar)
+
+        v_dup.addSpacing(6)
+        self.chk_ordenar = QCheckBox(
+            "Ordenar las series por código (sitio, número de árbol, radio)")
+        self.chk_ordenar.setChecked(True)
+        self.chk_ordenar.setToolTip(
+            "Reordena la salida como QLH107A, QLH107B, QLH108A…\n\n"
+            "Sirve también para ordenar un archivo YA UNIDO: cárgalo solo y\n"
+            "vuelve a exportarlo con esta casilla marcada.\n\n"
+            "Sin marcar, las series salen en el orden en que aparecen en los\n"
+            "archivos de entrada.")
+        v_dup.addWidget(self.chk_ordenar)
+
         layout.addWidget(grupo_dup)
 
         # Formato y destino
@@ -480,13 +532,14 @@ class DialogoUnirRwl(QDialog):
 
     def _dialog_agregar(self):
         carpeta_inicial = (os.path.dirname(self._archivos[-1].ruta)
-                           if self._archivos else "")
+                           if self._archivos else cargar_ruta(RUTA_UNIR))
         rutas, _ = QFileDialog.getOpenFileNames(
             self, "Seleccionar archivos .rwl", carpeta_inicial,
             "Tucson (*.rwl *.RWL *.txt *.TXT *.crn *.CRN);;Todos los archivos (*)",
             options=QFileDialog.Option.DontUseNativeDialog,
         )
         if rutas:
+            guardar_ruta(RUTA_UNIR, rutas[0])
             self._agregar_archivos(rutas)
 
     def _agregar_archivos(self, rutas: list):
@@ -608,18 +661,30 @@ class DialogoUnirRwl(QDialog):
             filtro = "Todos los archivos (*)"
             ext_default = ""
 
-        carpeta_inicial = (os.path.dirname(self._archivos[0].ruta)
-                           if self._archivos else "")
+        carpeta_inicial = cargar_ruta(
+            RUTA_UNIR,
+            os.path.dirname(self._archivos[0].ruta) if self._archivos else "")
         nombre_sugerido = "unido" + ext_default
 
         ruta, _ = QFileDialog.getSaveFileName(
             self, "Archivo de salida",
             os.path.join(carpeta_inicial, nombre_sugerido),
-            filtro, options=QFileDialog.Option.DontUseNativeDialog,
+            filtro,
+            options=(
+                QFileDialog.Option.DontUseNativeDialog
+                # `DontConfirmOverwrite` evita la confirmación interna de
+                # Qt ("X already exists. Do you want to replace it?") que
+                # aparece en INGLÉS aunque la app tenga traducción al
+                # español cargada. Tenemos nuestra propia confirmación
+                # en `_ejecutar_merge`, que SÍ está en español y además
+                # maneja el caso "ambos formatos" (dos archivos).
+                | QFileDialog.Option.DontConfirmOverwrite
+            ),
         )
         if ruta:
             if ext_default and not ruta.lower().endswith(ext_default):
                 ruta += ext_default
+            guardar_ruta(RUTA_UNIR, ruta)
             self.input_destino.setText(ruta)
 
     def _ejecutar_merge(self):
@@ -713,4 +778,7 @@ class DialogoUnirRwl(QDialog):
                     combinado.index.name = "Anio"
                     resultado[sid] = combinado
 
+        if getattr(self, "chk_ordenar", None) is not None \
+                and self.chk_ordenar.isChecked():
+            resultado = ordenar_series(resultado)
         return resultado

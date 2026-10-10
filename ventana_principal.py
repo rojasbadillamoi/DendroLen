@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QPixmap
 
-from constantes import APP_NAME, APP_VERSION
+from constantes import APP_NAME, APP_VERSION, DEFAULT_BAUD
 from tema_manager import tema
 
 
@@ -155,8 +155,12 @@ class VentanaPrincipal(QMainWindow):
         config = DialogoConfig()
         config.sesion_iniciada.connect(self.iniciar_medicion)
         if precargar:
-            config.inp_codigo.setText(precargar.get("codigo", ""))
-            config.inp_anio.setValue(precargar.get("anio", 1850))
+            # La pantalla sabe precargarse sola (incluye archivo a retomar)
+            if hasattr(config, "precargar_datos"):
+                config.precargar_datos(precargar)
+            else:
+                config.inp_codigo.setText(precargar.get("codigo", ""))
+                config.inp_anio.setValue(precargar.get("anio", 1850))
         self.stack.addWidget(config)
         self.stack.setCurrentWidget(config)
         self._set_badge("Configuración")
@@ -184,7 +188,48 @@ class VentanaPrincipal(QMainWindow):
             traceback.print_exc()
 
     def _nueva_muestra(self, parcial: dict):
-        self.mostrar_config(precargar=parcial)
+        """Pasa directo a medir la nueva muestra, sin volver al asistente.
+
+        Conserva el puerto, la velocidad y las unidades de la sesión anterior,
+        que es lo único que la ventana de nueva muestra no pregunta.
+        """
+        anterior = self._config_guardada or {}
+        codigo = parcial.get("codigo") or parcial.get("serie") or "MUE001"
+
+        cfg = {
+            "codigo":  codigo,
+            "serie":   parcial.get("serie") or codigo,
+            "anio":    parcial.get("anio", 1850),
+            "especie": parcial.get("especie", "No registrada"),
+            "archivo": parcial.get("archivo") or f"{codigo}.rwl",
+            # Se hereda la conexión que ya estaba funcionando
+            "baud":        anterior.get("baud", DEFAULT_BAUD),
+            "unidades":    anterior.get("unidades", "micras"),
+            "port":        anterior.get("port"),
+            "ultima_ruta": anterior.get("ultima_ruta", ""),
+        }
+
+        # Si se eligió un archivo existente, se continúa desde donde quedó
+        meds, eventos = [], {}
+        ruta = parcial.get("ruta_retomar")
+        if ruta and os.path.exists(ruta):
+            try:
+                from dialogo_config import (_leer_mediciones_rwl,
+                                            _leer_eventos_sidecar)
+                _, _, meds = _leer_mediciones_rwl(ruta)
+                eventos = _leer_eventos_sidecar(ruta)
+                cfg["archivo"] = ruta
+            except Exception:
+                meds, eventos = [], {}
+        cfg["meds_previas"]    = meds
+        cfg["eventos_previos"] = eventos
+
+        # Se libera el puerto del panel anterior y se deja un margen breve
+        # antes de volver a abrirlo para la nueva muestra.
+        self._limpiar_stack()
+        QTimer.singleShot(
+            250, lambda: self.iniciar_medicion(cfg, meds_previas=meds,
+                                               eventos_previos=eventos))
 
     def _limpiar_stack(self):
         while self.stack.count():
