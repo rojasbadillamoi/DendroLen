@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # ── Verificar dependencias (solo si NO es un exe empaquetado) ─────────────────
 if not getattr(sys, '_MEIPASS', None):
     _missing = []
-    for pkg, mod in [("PyQt6", "PyQt6"), ("matplotlib", "matplotlib"), ("pyserial", "serial")]:
+    for pkg, mod in [("PyQt6", "PyQt6"), ("matplotlib", "matplotlib"), ("pyserial", "serial"),
+                     ("numpy", "numpy"), ("pandas", "pandas"), ("scipy", "scipy")]:
         try:
             __import__(mod)
         except ImportError:

@@ -33,6 +33,12 @@ a = Analysis(
         'pandas',
         'numpy',
         'openpyxl',
+        # scipy: ajuste de la exponencial negativa y solver del spline. Se
+        # declara explícitamente porque esos imports viven dentro de funciones
+        # y conviene no depender de que el análisis estático los detecte.
+        'scipy',
+        'scipy.optimize',
+        'scipy.linalg',
         # Módulos del proyecto (por si los imports dinámicos no se detectan)
         'constantes',
         'tema_manager',

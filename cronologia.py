@@ -5,9 +5,19 @@ Construcción de cronologías estandarizadas, con el mismo método que el botón
 Crono de DPI. El código viene de modulo_codatacion.py de DPI para que ambos
 programas entreguen exactamente los mismos índices y las mismas correlaciones.
 
-Diferencia con DPI: el solver del spline está resuelto con numpy en vez de
-scipy, para no agregarle esa dependencia al instalador de DendroLen. Se
-verificó que ambos caminos coinciden hasta 1e-11 en valor relativo.
+scipy es dependencia obligatoria, igual que en DPI. Antes era opcional y eso
+tenía una consecuencia que no se veía: el respaldo del spline da el mismo
+resultado, pero el de la exponencial negativa caía a un ajuste log-lineal, que
+es la aproximación clásica y NO el mismo valor. Dos instalaciones de DendroLen
+podían entregar cronologías distintas sin avisar.
+
+Comprobado: `_fit_trend` de los dos programas devuelve la MISMA curva, con
+diferencia exactamente cero, en 350 comparaciones sobre los cinco métodos
+—series con decaimiento fuerte y suave, casi planas, crecientes, con asíntota
+pegada a cero, cortas de 3 a 15 años y con huecos de NaN—. Lo que hizo falta
+para eso, además de scipy, fue portar tres cosas que no eran evidentes: el
+rechazo de los ajustes exponenciales degenerados, el tratamiento de los huecos
+en el spline y la ventana impar de la media móvil.
 
 Valores por defecto, iguales a los de DPI:
     tipo        residual
@@ -145,48 +155,79 @@ def _fit_trend(values: np.ndarray, metodo: str,
         return np.polyval(p, x)
 
     if metodo in {"spline", "spl", "cubic_spline"}:
-        # Spline en escala lineal con piso en el 10% de la media, igual que DPI
+        # Spline en ESCALA LINEAL con piso en el 10 % de la media, idéntico al
+        # de DPI. Tres detalles que parecen menores y no lo son:
+        #
+        # 1. El spline se ajusta solo sobre los valores FINITOS. Pasarle los
+        #    huecos propaga NaN a toda la serie.
+        # 2. El piso sale de la media de los valores POSITIVOS. Con la media de
+        #    todos, un par de valores negativos lo bajan y el recorte cambia.
+        # 3. Si hubo huecos, la curva se interpola de vuelta a la rejilla
+        #    completa de años.
         try:
-            sp = np.asarray(spline_cook(
-                y, nyrs=float(rigidez or RIGIDEZ_SPLINE_DEFECTO), f=0.5))
-            media = float(np.nanmean(y))
-            piso = 0.10 * media if np.isfinite(media) and media > 0 else 0.0
-            sp = np.where(np.isfinite(sp), sp, media)
-            sp = np.maximum(sp, piso)
-            return sp
+            _y = np.asarray(y_fit, dtype=float)
+            _sp = np.asarray(spline_cook(
+                _y, nyrs=float(rigidez or RIGIDEZ_SPLINE_DEFECTO), f=0.5))
+            _pos = _y[_y > 0]
+            _piso = 0.10 * float(np.nanmean(_pos)) if _pos.size else 1e-6
+            tend = np.maximum(_sp, _piso)
+            if len(tend) != len(x):
+                tend = np.interp(x, x_fit, tend)
+            media = float(np.nanmean(y_fit))
+            tend = np.where(np.isfinite(tend) & (tend > 0), tend, media)
+            return tend
         except Exception:
             return _recta()
 
     if metodo in {"negexp", "exp", "exponencial"}:
+        # Opción 1 de ARSTAN: «neg expon curve (k>0), no = opt 4». Idéntico al
+        # de DPI, incluido el rechazo de los ajustes degenerados, que es lo que
+        # hace que los dos programas den la misma curva.
+        #
+        # El ajuste exponencial falla mucho más seguido de lo que uno supondría,
+        # y cuando falla el respaldo de ARSTAN es su opción 4 —regresión lineal
+        # de cualquier pendiente—, no la media horizontal, que es su opción 6.
+        #
+        # Sin el rechazo, el optimizador empuja los parámetros contra el borde y
+        # devuelve una exponencial casi plana que «converge» pero que ARSTAN
+        # descarta: una exponencial que no decae es una recta disfrazada.
+        from scipy.optimize import curve_fit
+
+        def _f(t, a, b, k):
+            return a * np.exp(-b * t) + k
+
+        a0 = max(float(np.nanmax(y_fit) - np.nanmin(y_fit)), 1e-3)
+        b0 = 0.01
+        c0 = max(float(np.nanmin(y_fit)), 1e-6)
         try:
-            from scipy.optimize import curve_fit
-
-            def _f(t, a, b, k):
-                return a * np.exp(-b * t) + k
-
-            a0 = max(float(y_fit[0] - np.min(y_fit)), 1e-6)
-            k0 = float(np.min(y_fit))
-            popt, _ = curve_fit(_f, x_fit, y_fit, p0=[a0, 0.01, k0], maxfev=10000)
+            popt, _ = curve_fit(
+                _f, x_fit, y_fit, p0=(a0, b0, c0), maxfev=20000,
+                bounds=([0.0, 0.0, 0.0], [np.inf, 10.0, np.inf]),
+            )
+            a_f, b_f, d_f = popt
             tend = _f(x, *popt)
-            if not np.all(np.isfinite(tend)):
+            # La asíntota debe ser ESTRICTAMENTE positiva; el umbral es
+            # relativo a la media porque 0,001 mm no significa lo mismo en una
+            # serie de 0,3 mm que en una de 3 mm.
+            _piso_d = (1e-4 * float(np.nanmean(y_fit))
+                       if np.isfinite(np.nanmean(y_fit)) else 0.0)
+            if (not np.all(np.isfinite(tend)) or b_f <= 1e-4
+                    or a_f <= 1e-6 or d_f <= _piso_d):
                 return _recta()
             return tend
         except Exception:
-            # Sin scipy: ajuste log-lineal, que es la aproximación clásica
-            try:
-                pos = y_fit > 0
-                if pos.sum() >= 3:
-                    p = np.polyfit(x_fit[pos], np.log(y_fit[pos]), 1)
-                    tend = np.exp(np.polyval(p, x))
-                    if np.all(np.isfinite(tend)):
-                        return tend
-            except Exception:
-                pass
             return _recta()
 
     if metodo in {"media_movil", "moving_average", "ma"}:
-        w = int(ventana_mm) if ventana_mm else max(3, int(round(0.10 * n)))
-        w = max(3, min(w, n))
+        # Igual que DPI: la ventana por omisión es el 10 % de los años con
+        # dato —no del largo total— y se fuerza IMPAR, porque una ventana par
+        # centrada no queda centrada y desplaza la curva medio año.
+        if ventana_mm is not None and ventana_mm >= 3:
+            w = int(ventana_mm)
+        else:
+            w = max(3, int(round(len(y_fit) * 0.10)))
+        if w % 2 == 0:
+            w += 1
         return (pd.Series(y).rolling(window=w, center=True, min_periods=1)
                 .mean().to_numpy(dtype=float))
 

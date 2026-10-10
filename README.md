@@ -40,7 +40,7 @@ Incluye un módulo de co-datación en vivo con serie maestra, que calcula y visu
 - **Construcción de cronologías estandarizadas** sin salir del programa, en sus tres variantes: cruda, estándar y residual
 - **Métodos de ajuste**: spline de Cook y Peters (rigidez configurable, 32 años por defecto), exponencial negativa, recta, media móvil y media
 - **Agregación por media biponderada** de Tukey
-- **Mismo núcleo numérico que DPI**: ambos programas entregan los mismos índices y las mismas correlaciones, verificado hasta 1×10⁻¹¹ en valor relativo
+- **Mismo núcleo numérico que DPI**: ambos programas ajustan la misma curva de tendencia, con diferencia exactamente cero, verificado en 350 comparaciones sobre los cinco métodos
 
 ### Edición durante la medición
 

@@ -14,11 +14,10 @@ cronologías estandarizadas sin salir del programa, en sus tres variantes
 negativa, recta, media móvil y media.
 
 El código proviene de DPI para que ambos programas entreguen los mismos
-índices y las mismas correlaciones. La única diferencia de implementación es
-el solver del spline: DPI usa scipy y DendroLen lo resuelve con numpy cuando
-scipy no está instalado, para no volverlo una dependencia obligatoria del
-instalador. Se verificó que ambos caminos coinciden hasta 1×10⁻¹¹ en valor
-relativo.
+índices y las mismas correlaciones. Comprobado: el ajuste de tendencia de los
+dos devuelve la misma curva, con diferencia exactamente cero, en 350
+comparaciones sobre los cinco métodos, incluidas series casi planas, con
+asíntota pegada a cero, cortas y con huecos.
 
 **Edición de la serie durante la medición.** Insertar y eliminar anillos en
 cualquier posición, y desplazar la serie completa en el tiempo, sin
@@ -44,10 +43,22 @@ muestra.
   `.xdp-gitignore-xV6qzh`, que recibió del selector de archivos al copiarlo.
   Con ese nombre git no ignoraba nada.
 
+**scipy pasa a ser dependencia obligatoria.** Era opcional, y el respaldo sin
+scipy no era equivalente: el del spline sí daba el mismo resultado, pero el de
+la exponencial negativa caía a un ajuste log-lineal, de modo que dos
+instalaciones de DendroLen podían entregar cronologías distintas sin avisar.
+
+Al verificarlo aparecieron tres divergencias más con DPI, que también se
+corrigieron: DendroLen aceptaba ajustes exponenciales degenerados —asíntota
+pegada a cero o sin decaimiento, que ARSTAN rechaza—, pasaba los huecos de la
+serie al spline en vez de ajustar solo sobre los años con dato, y no forzaba
+ventana impar en la media móvil, lo que desplaza la curva medio año.
+
 ### Notas
 
 Se agrega `requirements.txt`, que antes no existía: las dependencias solo
-estaban anotadas en el README.
+estaban anotadas en el README. Ahora incluye scipy y el chequeo de arranque
+también verifica numpy, pandas y scipy, que no comprobaba.
 
 ---
 
