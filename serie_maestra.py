@@ -116,8 +116,12 @@ def leer_rwl(ruta: str) -> pd.Series:
         serie.attrs["info_crono"] = None
         return serie
 
-    # Varias series: se construye la cronología igual que el botón Crono de
-    # DPI (spline de Cook rigidez 32, residual, media biponderada).
+    # Varias series: se construye la cronología igual que DPI al cargar un
+    # archivo de referencia con varias series —su `_procesar_tucson_como_crono`
+    # genera la auto-cronología con spline de Cook 32, residual y media
+    # biponderada—. No es la pestaña 🧭 Cronología de DPI, que además ofrece el
+    # camino ARSTAN con doble detrending, logaritmo previo y estabilización de
+    # varianza; esa es otra cosa y no es la que corresponde acá.
     try:
         from cronologia import construir_cronologia, describir
         crono, info = construir_cronologia(marcos)

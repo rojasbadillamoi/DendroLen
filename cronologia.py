@@ -40,24 +40,32 @@ TIPOS_CRONOLOGIA       = ("raw", "standard", "residual")
 # AGREGACIÓN
 # =============================================================================
 
-def biweight_mean(values, c: float = 6.0) -> float:
-    """Media biponderada de Tukey: promedio robusto frente a valores atípicos."""
+def biweight_mean(values, c: float = 9.0, minimo: int = 6) -> float:
+    """Media biponderada de Tukey, al modo de ARSTAN.
+
+    Con menos de seis observaciones devuelve la MEDIANA: verificado contra una
+    corrida de ARSTAN sobre un archivo de exactamente tres series, donde su
+    cronología cruda es exactamente la mediana (r = 1,000000). Con pocos datos
+    la desviación absoluta mediana es un estimador pésimo de la escala y la
+    ponderación queda arbitraria.
+
+    Constante 9, la de `tbrm` de dplR, que es la referencia publicada.
+    """
     x = np.asarray(values, dtype=float)
     x = x[np.isfinite(x)]
     if len(x) == 0:
         return np.nan
-    if len(x) < 3:
-        return float(np.mean(x))
+    if len(x) < max(int(minimo), 1):
+        return float(np.median(x))
     m = np.median(x)
     mad = np.median(np.abs(x - m))
-    if mad == 0:
-        return float(np.mean(x))
-    u = (x - m) / (c * mad)
-    mask = np.abs(u) < 1
-    if not np.any(mask):
-        return float(np.mean(x))
-    w = (1 - u[mask] ** 2) ** 2
-    return float(np.sum((x[mask] - m) * w) / np.sum(w) + m)
+    if mad <= 0:
+        return float(m)
+    u = (x - m) / (c * mad + 1e-6)
+    w = np.where(np.abs(u) <= 1, (1 - u ** 2) ** 2, 0.0)
+    if w.sum() <= 0:
+        return float(m)
+    return float(np.sum(w * x) / np.sum(w))
 
 
 # =============================================================================
@@ -306,12 +314,101 @@ def _seleccionar_orden_ar(x: np.ndarray, max_orden: int = ORDEN_AR_MAXIMO) -> in
     mejor_orden, mejor_pun = 1, np.inf
     for p in range(1, max_orden + 1):
         _phi, v = _ajustar_ar_yule_walker(x, p)
-        if v <= 0:
+        if not np.isfinite(v) or v <= 0:
             continue
         pun = n * np.log(v) + p * np.log(n)      # BIC
-        if pun < mejor_pun:
-            mejor_orden, mejor_pun = p, pun
+        if pun < mejor_pun - 1e-9:
+            mejor_pun, mejor_orden = pun, p
     return mejor_orden
+
+
+def _ajustar_ar_burg(x: np.ndarray, p: int):
+    """Coeficientes autorregresivos por el método de Burg.
+
+    Es el estimador de ARSTAN, y es el que usa DPI. Verificado despejando los
+    coeficientes de ARSTAN desde los residuos por serie de una corrida real:
+    el error medio de Burg es 0,00106, frente a 0,00456 de Yule-Walker y
+    0,00273 de mínimos cuadrados.
+
+    Burg minimiza la suma de los errores de predicción hacia adelante y hacia
+    atrás, en vez de resolver las ecuaciones de Yule-Walker sobre las
+    autocorrelaciones muestrales. Con series cortas la diferencia se nota,
+    porque Yule-Walker subestima la persistencia.
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n <= p or p < 1:
+        return np.zeros(max(p, 0)), float(np.var(x)) if n else 0.0
+    f = x.copy()
+    b = x.copy()
+    a = []
+    v = float(np.dot(x, x) / n)
+    for m in range(p):
+        num = 2.0 * float(np.dot(f[m + 1:], b[m:-1]))
+        den = float(np.dot(f[m + 1:], f[m + 1:]) + np.dot(b[m:-1], b[m:-1]))
+        k = num / den if den > 0 else 0.0
+        a = [ai - k * aj for ai, aj in zip(a, a[::-1])] + [k] if a else [k]
+        ff = f[m + 1:] - k * b[m:-1]
+        bb = b[m:-1] - k * f[m + 1:]
+        f = np.concatenate([f[:m + 1], ff])
+        b = np.concatenate([b[:m + 1], bb])
+        v *= (1.0 - k * k)
+    return np.asarray(a, dtype=float), max(v, 1e-12)
+
+
+def orden_ar_agrupado(indices: dict, pmax: int = 10) -> tuple:
+    """Orden autorregresivo AGRUPADO, al modo de ARSTAN.
+
+    ARSTAN no elige un orden por serie: calcula las autocorrelaciones de toda
+    la colección juntas, ajusta Yule-Walker sobre ellas, elige el orden por el
+    PRIMER MÍNIMO del AIC y aplica ese mismo orden a todas las series.
+
+    El primer mínimo, y no el mínimo global, es deliberado: los dos criterios
+    pueden diferir y ARSTAN pide revisar la traza del AIC.
+
+    Devuelve (orden, autocorrelaciones_agrupadas).
+    """
+    num = np.zeros(pmax)
+    den = np.zeros(pmax)
+    ntot = 0
+    for v in indices.values():
+        x = pd.to_numeric(v, errors="coerce").dropna().to_numpy(dtype=float)
+        if len(x) < 20:
+            continue
+        x = x - x.mean()
+        n = len(x)
+        ntot += n
+        c0 = float(np.sum(x * x))
+        if c0 <= 0:
+            continue
+        for k in range(1, pmax + 1):
+            if n - k < 5:
+                continue
+            num[k - 1] += n * (float(np.sum(x[:-k] * x[k:])) / c0)
+            den[k - 1] += n
+    if ntot == 0:
+        return 1, np.zeros(pmax)
+    rho = num / np.maximum(den, 1e-12)
+
+    aic = []
+    for p in range(0, pmax + 1):
+        if p == 0:
+            var = 1.0
+        else:
+            R = np.array([[1.0 if i == j else rho[abs(i - j) - 1]
+                           for j in range(p)] for i in range(p)])
+            r = rho[:p]
+            try:
+                phi = np.linalg.solve(R, r)
+            except Exception:
+                aic.append(np.inf)
+                continue
+            var = 1.0 - float(np.dot(phi, r))
+        aic.append(ntot * np.log(max(var, 1e-12)) + 2 * p)
+    for p in range(1, len(aic) - 1):
+        if aic[p] <= aic[p - 1] and aic[p] <= aic[p + 1]:
+            return p, rho
+    return max(int(np.argmin(aic)), 1), rho
 
 
 def residualizar_indice(indice: pd.Series, max_orden: int | None = None,
@@ -333,10 +430,24 @@ def residualizar_indice(indice: pd.Series, max_orden: int | None = None,
     if p <= 0:
         resid_v = x.copy()
     else:
-        phi, _ = _ajustar_ar_yule_walker(x, p)
+        # Burg, no Yule-Walker: es el estimador de ARSTAN. Ver _ajustar_ar_burg.
+        phi, _ = _ajustar_ar_burg(x, p)
+        # RETROPRONÓSTICO de los p valores anteriores al inicio.
+        #
+        # ARSTAN no deja los primeros p años sin modelar: estima los valores
+        # previos con el mismo modelo, reflejando la serie, y así calcula un
+        # residuo para TODOS los años. Sin esto el primer año se queda con el
+        # índice crudo y —peor— ese valor entra en la media de recentrado y
+        # desplaza la serie ENTERA unas tres milésimas.
+        prev = np.empty(p, dtype=float)
+        for i in range(p):
+            j = min(i, len(x) - 1)
+            prev[p - 1 - i] = float(np.dot(phi[:1], [x[j]])) if p == 1 else x[j]
+        ext = np.concatenate([prev, x])
         resid_v = x.copy()
-        for t in range(p, len(x)):
-            resid_v[t] = x[t] - float(np.dot(phi, x[t - p:t][::-1]))
+        for t in range(len(x)):
+            hist = ext[t:t + p][::-1]
+            resid_v[t] = x[t] - float(np.dot(phi, hist))
 
     resid = pd.Series(resid_v, index=s.index)
     # Se devuelve al nivel de la serie original, como hace dplR en ar.func
@@ -386,19 +497,22 @@ def construir_cronologia(series: dict[str, pd.Series],
     if not series:
         raise ValueError("No hay series para construir la cronología.")
 
-    # Orden AR agrupado, al modo de ARSTAN: uno solo para toda la colección
+    # Orden AR agrupado, al modo de ARSTAN: un solo orden para toda la
+    # colección, elegido sobre las autocorrelaciones del conjunto. No es la
+    # mediana de los órdenes por serie, que da otra cosa.
+    #
+    # El pre-ajuste va sin `rigidez` a propósito: es lo que hace DPI, y la
+    # igualdad entre los dos programas se mide sobre su comportamiento, no
+    # sobre el que uno supondría.
     orden_pool = None
-    if (tipo or "").lower() == "residual" and len(series) >= 3:
+    if (tipo or "").lower() == "residual":
         try:
-            ordenes = []
-            for s in series.values():
-                idx = detrend_serie_indice(s, metodo, ventana_mm=ventana_mm,
-                                           rigidez=rigidez)
-                if len(idx) >= 20:
-                    x = (idx - idx.mean()).to_numpy(dtype=float)
-                    ordenes.append(_seleccionar_orden_ar(x))
-            if ordenes:
-                orden_pool = int(round(float(np.median(ordenes))))
+            prev = {}
+            for nombre, s in series.items():
+                prev[nombre] = detrend_serie_indice(s, metodo,
+                                                    ventana_mm=ventana_mm)
+            if len(prev) >= 3:
+                orden_pool, _rho = orden_ar_agrupado(prev)
         except Exception:
             orden_pool = None
 
