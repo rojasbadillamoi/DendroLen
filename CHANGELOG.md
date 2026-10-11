@@ -65,18 +65,32 @@ curva medio año.
 **La cronología tenía otras cuatro.** Comparar el ajuste de tendencia no
 alcanzaba: la cronología residual pasa además por un modelo autorregresivo y
 una media robusta, y ahí los dos programas hacían cosas distintas. Medido
-sobre cinco colecciones reales, en índices de media ≈ 1:
+sobre cinco colecciones reales de 19 a 82 series, deshaciendo cada corrección
+contra el código actual, en índices de media ≈ 1:
 
 | diferencia | DendroLen tenía | error máximo |
 |---|---|---|
-| estimador AR | Yule-Walker en vez de Burg | 0,005–0,016 |
-| años previos al inicio | los primeros p sin modelar | 0,055–0,244 |
-| constante del biweight | 6 en vez de 9, y mínimo 3 en vez de 6 | 0,068–0,105 |
-| orden AR agrupado | mediana de los órdenes por serie | 0,000–0,233 |
+| constante del biweight | 6 en vez de 9, y mínimo 3 en vez de 6 | 0,072–0,089 |
+| años previos al inicio | los primeros p sin modelar | 0,018–0,084 |
+| estimador AR | Yule-Walker en vez de Burg | 0,002–0,010 |
+| orden AR agrupado | mediana de los órdenes por serie | 0,000 |
 
-El retropronóstico es el que más pesa: sin él los primeros años quedan con el
-índice crudo y ese valor entra en la media de recentrado, que desplaza la
-serie entera.
+El retropronóstico importa porque sin él los primeros años quedan con el
+índice crudo, y ese valor entra en la media de recentrado y desplaza la serie
+entera.
+
+El orden agrupado sale en cero porque el criterio corregido —ver abajo— elige
+AR(1) en las cinco colecciones, y la mediana de los órdenes por serie también.
+Coinciden en la práctica, pero el código tiene que coincidir igual: con el
+criterio anterior esa misma fila llegaba a 0,233.
+
+**El criterio del orden AR agrupado estaba mal en los dos**, y se corrigió en
+DPI 2.4.1 y acá. Se elegía por el primer mínimo local del AIC con `n` igual a
+la suma de los largos de todas las series; con eso la penalización queda nula,
+la traza sale monótona y el orden lo termina decidiendo cuántas series tiene la
+colección —AR(1) con 19 a 43 series, AR(10) con 70 a 82, con la misma
+autocorrelación de primer orden—. Ahora es BIC sobre el largo mediano con
+techo en el orden 3, el mismo criterio que la ruta por serie.
 
 ### Notas
 
