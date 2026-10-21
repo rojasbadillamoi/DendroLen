@@ -27,19 +27,44 @@ CP210x). Nada más.
 Todo se descarga desde **<https://rojasbadillamoi.github.io/>**, en la
 **[página de DendroLen](https://rojasbadillamoi.github.io/DendroLen/)**.
 
-**En Windows se instala como cualquier otro programa:** doble clic en el `.exe`
-y siguiente, siguiente. DendroLen queda en el menú de inicio y no hay que
-instalar Python ni nada más.
+**Se instala como cualquier otro programa: doble clic y seguir los pasos.**
+
+| Sistema | Archivo | Qué hacer |
+|---|---|---|
+| **Windows 10/11** | `.exe` | Doble clic en el instalador y siguiente, siguiente. DendroLen queda en el menú de inicio. |
+| **Debian / Ubuntu** | `.deb` | Doble clic: lo abre el Centro de Software (o GDebi, o el gestor que tengas) y le das instalar. DendroLen queda en el menú de aplicaciones, con su ícono en el dock. |
+
+No hay que instalar Python ni nada más: los dos paquetes traen todo lo que
+necesitan.
 
 > **Si Windows te muestra un aviso azul** que dice que no reconoce el programa,
-> es porque el instalador no está firmado digitalmente. Clic en
-> **Más información → Ejecutar de todas formas**.
+> es porque el instalador no está firmado digitalmente —firmarlo cuesta una
+> licencia anual—. Clic en **Más información → Ejecutar de todas formas**.
 
-### En Linux y macOS
+Si prefieres la terminal, el `.deb` también se instala así, y `apt` resuelve
+las dependencias solo:
 
-Todavía no hay paquete instalable, así que va desde el código fuente. Necesitas
-Python 3.10 o superior. El `.zip` está en la misma página, o clonas el
-repositorio:
+```bash
+sudo apt install ./dendrolen_*.deb
+```
+
+### El permiso del puerto serie, en cualquier Linux
+
+Esto hay que hacerlo **sin importar cómo instalaste**, y es lo que más
+confusión causa: tu usuario necesita permiso para leer el puerto serie. Si el
+carro no aparece en la lista de puertos, casi siempre es esto y no el hardware.
+
+```bash
+sudo usermod -aG dialout $USER     # y cerrar sesión para que tome efecto
+```
+
+Hay que cerrar sesión de verdad —o reiniciar—: abrir otra terminal no basta.
+
+### Desde el código fuente
+
+Para macOS, para otras distribuciones de Linux, o si quieres modificar el
+programa. Necesitas Python 3.10 o superior. El `.zip` del código está en la
+misma página, o clonas el repositorio:
 
 ```bash
 git clone https://github.com/rojasbadillamoi/DendroLen.git
@@ -50,14 +75,6 @@ python3 main_dendro.py
 ```
 
 En Ubuntu y Debian, si `venv` reclama, instala antes `python3-venv`.
-
-**Un paso más en Linux, y es el que más confusión causa:** tu usuario necesita
-permiso para leer el puerto serie. Si el carro no aparece en la lista, casi
-siempre es esto y no el hardware:
-
-```bash
-sudo usermod -aG dialout $USER     # y cerrar sesión para que tome efecto
-```
 
 ---
 
