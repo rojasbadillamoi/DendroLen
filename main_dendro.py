@@ -160,6 +160,10 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("MoiCedrus")
+    # En Wayland el compositor no puede leer el ícono desde la ventana: lo
+    # busca por este nombre, que tiene que coincidir con el del .desktop que
+    # instala el paquete. Sin esto el dock muestra el ícono genérico.
+    app.setDesktopFileName("moicedrus-dendrolen")
 
     # ── Splash screen — aparece inmediatamente ────────────────────────────
     splash_pix = _crear_splash_pixmap()
