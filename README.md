@@ -4,6 +4,10 @@
 
 Desarrollada por **Moisés E. Rojas Badilla** como parte de la suite **MoiCedrus**.
 
+> 📖 **¿Vienes a usarlo, no a leer la ficha técnica?** Parte por el
+> **[Manual](MANUAL.md)**: el paso a paso con capturas, del carro al archivo
+> `.rwl`. Este README es la referencia completa.
+
 ---
 
 ## Descripción
