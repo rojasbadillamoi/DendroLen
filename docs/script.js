@@ -106,14 +106,50 @@
   }
 
   function revealSourceInstructions() {
-    const detail = $('instalar-fuente');
-    if (detail && window.location.hash === '#instalar-fuente') detail.open = true;
+    const detail = /^#instalar-[a-z-]+$/.test(window.location.hash)
+      ? $(window.location.hash.slice(1)) : null;
+    if (detail && detail.tagName === 'DETAILS') detail.open = true;
   }
   window.addEventListener('hashchange', revealSourceInstructions);
   revealSourceInstructions();
 
+  // En la portada, cada programa muestra las plataformas de su última versión.
+  function actualizarPortada() {
+    document.querySelectorAll('.program-downloads[data-program]').forEach(bloque => {
+      const programa = bloque.dataset.program;
+      if (!/^[A-Za-z0-9._-]+$/.test(programa)) return;
+      const repositorio = `rojasbadillamoi/${programa}`;
+      const esDe = {windows: /\.(exe|msi|msix)$/i, linux: /\.(deb|rpm|appimage)$/i};
+      const descargaValida = valor => {
+        try {
+          const url = new URL(valor);
+          return url.protocol === 'https:' && url.hostname === 'github.com' &&
+            !url.username && !url.password && !url.port &&
+            url.pathname.startsWith(`/${repositorio}/releases/download/`);
+        } catch { return false; }
+      };
+      const controlador = new AbortController();
+      const corte = setTimeout(() => controlador.abort(), 8000);
+      fetch(`https://api.github.com/repos/${repositorio}/releases/latest`,
+            {signal: controlador.signal, headers: {Accept: 'application/vnd.github+json'}, credentials: 'omit'})
+        .then(respuesta => respuesta.ok ? respuesta.json() : Promise.reject(new Error('Release no disponible')))
+        .then(release => {
+          if (release.draft || release.prerelease || !Array.isArray(release.assets)) throw new Error('Datos incompletos');
+          const activos = release.assets.filter(a => a && typeof a.name === 'string' && a.state === 'uploaded' && descargaValida(a.browser_download_url));
+          bloque.querySelectorAll('a[data-plataforma]').forEach(enlace => {
+            const patron = esDe[enlace.dataset.plataforma];
+            const activo = patron && activos.find(a => patron.test(a.name));
+            if (activo) { enlace.href = activo.browser_download_url; enlace.hidden = false; }
+            else { enlace.hidden = true; }
+          });
+        })
+        .catch(() => { /* Quedan los enlaces de respaldo escritos en la página. */ })
+        .finally(() => clearTimeout(corte));
+    });
+  }
+
   const name = document.body.dataset.repo;
-  if (!['DPI', 'DendroLen'].includes(name)) return;
+  if (!['DPI', 'DendroLen'].includes(name)) { actualizarPortada(); return; }
   const repo = `rojasbadillamoi/${name}`;
   const repoUrl = `https://github.com/${repo}`;
   const fallbackVersion = document.body.dataset.fallbackVersion;
@@ -134,7 +170,7 @@
   function classify(filename) {
     const file = filename.toLowerCase();
     if (/\.(exe|msi|msix)$/.test(file)) return {title:'Windows',mark:'W',kind:'INSTALADOR',suffix:file.slice(file.lastIndexOf('.')),description:`Instala ${name} siguiendo las indicaciones del paquete publicado.`};
-    if (/\.(deb|rpm|appimage)$/.test(file)) return {title:'Linux',mark:'L',kind:'PAQUETE',suffix:/appimage$/.test(file)?'.AppImage':file.slice(file.lastIndexOf('.')),description:'Consulta las notas de esta versión para conocer la distribución y arquitectura compatibles.'};
+    if (/\.(deb|rpm|appimage)$/.test(file)) return {title:'Linux',mark:'L',kind:'PAQUETE',suffix:/appimage$/.test(file)?'.AppImage':file.slice(file.lastIndexOf('.')),description:/\.deb$/.test(file)?'Paquete para Debian y Ubuntu. Instálalo con doble clic o desde la terminal con apt.':'Consulta las notas de esta versión para conocer la distribución y arquitectura compatibles.'};
     if (/\.(dmg|pkg)$/.test(file)) return {title:'macOS',mark:'M',kind:'PAQUETE',suffix:file.slice(file.lastIndexOf('.')),description:'Consulta las notas de esta versión para conocer los requisitos del paquete.'};
     return {title:'Archivo de la versión',mark:'↓',kind:'ARCHIVO ADICIONAL',suffix:'',description:'Consulta las notas de la versión para conocer el contenido y el uso de este archivo.'};
   }
@@ -155,6 +191,11 @@
     link.href = asset.browser_download_url;
     link.setAttribute('aria-label', `Descargar ${asset.name}`);
     card.append(top, element('h3', '', info.title), element('p', 'asset-name', asset.name), element('p', 'download-description', info.description), element('p', 'asset-meta', `${formatSize(asset.size)} · ${version}`), link);
+    if (/\.deb$/i.test(asset.name) && $('instalar-linux')) {
+      const ayuda = element('a', 'small-link', 'Ver instrucciones de instalación');
+      ayuda.href = '#instalar-linux';
+      card.append(ayuda);
+    }
     return card;
   }
   // El DOI del enlace es el del registro completo del programa: Zenodo lo resuelve
@@ -230,6 +271,8 @@
       if (linux) heroParts.push(`Linux ${classify(linux.name).suffix} ${formatSize(linux.size)}`);
       if (!windows && !linux) heroParts.push('Consulta los archivos disponibles');
       $('hero-release').textContent = heroParts.join(' · ');
+      const comando = $('linux-command');
+      if (comando && linux) comando.textContent = `sudo apt install ./${linux.name}`;
       updateCitation(version, release.published_at);
     } catch {
       $('release-status').replaceChildren(document.createTextNode(`No se pudo comprobar la versión más reciente. Se muestran enlaces de respaldo de ${fallbackVersion}. `));

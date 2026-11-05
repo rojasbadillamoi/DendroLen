@@ -35,3 +35,4 @@ img{max-width:100%;height:auto}a{color:inherit;text-underline-offset:5px;text-de
 .release-summary{width:100%;max-width:410px;min-width:0}
 .hero-actions .button{white-space:nowrap;flex-shrink:0}
 .roadmap-detail:not([open])>:not(summary){display:none}
+.doc-links{display:flex;flex-wrap:wrap;gap:22px;align-items:center;margin:0}
