@@ -157,6 +157,39 @@
     card.append(top, element('h3', '', info.title), element('p', 'asset-name', asset.name), element('p', 'download-description', info.description), element('p', 'asset-meta', `${formatSize(asset.size)} · ${version}`), link);
     return card;
   }
+  // El DOI del enlace es el del registro completo del programa: Zenodo lo resuelve
+  // siempre a la versión más reciente, así que solo cambian la versión y el año.
+  function updateCitation(version, publishedAt) {
+    const text = $('citation-text');
+    if (!text) return;
+    const number = version.replace(/^v/i, '').trim();
+    if (!number) return;
+    const published = new Date(publishedAt);
+    const year = publishedAt && !Number.isNaN(published.getTime()) ? published.getUTCFullYear() : null;
+    let citation = text.textContent.replace(/\(versión\s+[^)]*\)/i, `(versión ${number})`);
+    if (year) citation = citation.replace(/\(\d{4}\)/, `(${year})`);
+    text.textContent = citation;
+    const label = $('citation-label');
+    if (label) label.textContent = `REFERENCIA · VERSIÓN ${number}`;
+    // El BibTeX se regenera a partir del archivo publicado; si falla, queda ese archivo.
+    const bibtex = $('bibtex-download');
+    if (!bibtex) return;
+    const source = bibtex.dataset.source || bibtex.getAttribute('href');
+    if (!source) return;
+    bibtex.dataset.source = source;
+    fetch(source, { credentials: 'omit' })
+      .then(response => response.ok ? response.text() : Promise.reject(new Error('BibTeX no disponible')))
+      .then(original => {
+        let entry = original.replace(/version\s*=\s*\{[^}]*\}/i, `version = {${number}}`);
+        if (year) entry = entry.replace(/year\s*=\s*\{[^}]*\}/i, `year = {${year}}`);
+        if (entry === original) return;
+        const url = URL.createObjectURL(new Blob([entry], { type: 'application/x-bibtex' }));
+        if (bibtex.dataset.blobUrl) URL.revokeObjectURL(bibtex.dataset.blobUrl);
+        bibtex.dataset.blobUrl = url;
+        bibtex.href = url;
+      })
+      .catch(() => { /* Se mantiene el archivo .bib incluido en la página. */ });
+  }
   async function updateRelease() {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
@@ -183,16 +216,27 @@
       const published = new Date(release.published_at);
       $('release-status').textContent = `Última versión estable verificada en GitHub${release.published_at && !Number.isNaN(published.getTime()) ? ` · ${new Intl.DateTimeFormat('es-CL', {day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).format(published)}` : ''}.`;
       const windows = assets.find(asset => classify(asset.name).title === 'Windows');
+      const linux = assets.find(asset => classify(asset.name).title === 'Linux');
       $('primary-download').href = windows ? windows.browser_download_url : '#descargas';
       $('primary-download-label').textContent = windows ? 'Descargar para Windows' : 'Ver descargas';
-      $('hero-release').textContent = windows ? `${version} · ${formatSize(windows.size)} · Instalador Windows` : `${version} · Consulta los archivos disponibles`;
-      // La referencia bibliográfica corresponde a su versión y no se cambia automáticamente.
+      // Si esta versión no publicó paquete de Linux, el botón se oculta en lugar de quedar roto.
+      const linuxButton = $('linux-download');
+      if (linuxButton) {
+        linuxButton.hidden = !linux;
+        if (linux) linuxButton.href = linux.browser_download_url;
+      }
+      const heroParts = [version];
+      if (windows) heroParts.push(`Windows ${classify(windows.name).suffix} ${formatSize(windows.size)}`);
+      if (linux) heroParts.push(`Linux ${classify(linux.name).suffix} ${formatSize(linux.size)}`);
+      if (!windows && !linux) heroParts.push('Consulta los archivos disponibles');
+      $('hero-release').textContent = heroParts.join(' · ');
+      updateCitation(version, release.published_at);
     } catch {
       $('release-status').replaceChildren(document.createTextNode(`No se pudo comprobar la versión más reciente. Se muestran enlaces de respaldo de ${fallbackVersion}. `));
       const link = element('a', '', 'Ver todas las versiones');
       link.href = `${repoUrl}/releases`;
       $('release-status').append(link);
-      $('hero-release').textContent = `${fallbackVersion} · Enlace de respaldo · Instalador Windows`;
+      $('hero-release').textContent = `${fallbackVersion} · Enlaces de respaldo · Windows .exe · Linux .deb`;
     } finally { clearTimeout(timeout); }
   }
   updateRelease();
